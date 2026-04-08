@@ -351,6 +351,11 @@ struct Constants {
 
   double fixed_nbo_over_t = 2.5;
 
+  double deep_redox_rel_tolerance = 1.0e-6;
+  int deep_redox_max_iterations = 64;
+  double deep_redox_feo_activity_coefficient = 1.55;
+  double deep_redox_fe_alloy_activity = 0.75;
+
   double step2_outer_rel_tolerance = 1.0e-4;
   int step2_outer_max_iterations = 32;
   double step2_root_rel_tolerance = 1.0e-10;
@@ -798,6 +803,19 @@ struct SilicateIronInventory {
   }
 };
 
+struct DeepRedoxEquilibriumState {
+  double ferric_fraction_old = 0.0;
+  double ferric_fraction_equilibrium = 0.0;
+  double reaction_extent_mol = 0.0;
+  double deep_delta_iw_eq = std::numeric_limits<double>::quiet_NaN();
+  double surface_temperature_k = 0.0;
+  double surface_delta_iw = std::numeric_limits<double>::quiet_NaN();
+  double oxidized_fe0_mass_kg = 0.0;
+  SilicateIronInventory equilibrated_melt_iron{};
+  RedoxState equilibrated_melt_redox{};
+  int iteration_count = 0;
+};
+
 struct OxideCellEosParams {
   double v0_a3 = 0.0;
   double k0_gpa = 0.0;
@@ -819,6 +837,7 @@ struct IwPolynomial {
 constexpr double kUniversalGasConstantJPerMolK = 8.31446261815324;
 constexpr double kLog10Factor = 2.302585092994046;
 constexpr double kReferencePressureGpa = 1.0e-4;
+constexpr double kFerricFractionClampEpsilon = 1.0e-12;
 constexpr double kFerricReferenceTemperatureK = 1673.15;
 constexpr double kFerricDeltaCpJPerMolK = 33.25;
 constexpr double kFerricFitA = 0.1917;
@@ -837,7 +856,6 @@ constexpr double kSilicateXSio2 = 0.380;
 constexpr double kSilicateXAlO1p5 = 0.045;
 constexpr double kSilicateXMgO = 0.479;
 constexpr double kSilicateXCaO = 0.031;
-constexpr double kSilicateXFeOInitial = 0.056;
 constexpr double kSilicateXTiO2 = 0.001;
 constexpr double kSilicateXNaO0p5 = 0.007;
 constexpr double kSilicateXKO0p5 = 0.0;
@@ -1181,6 +1199,56 @@ constexpr OxideCellEosParams kFerrousCellEos{1180.10, 24.22, 3.382, 0.012, 35.70
   return r_ferric / (1.0 + r_ferric);
 }
 
+[[nodiscard]] double ClampFerricFractionForInversion(double ferric_fraction) {
+  return std::clamp(ferric_fraction, kFerricFractionClampEpsilon,
+                    1.0 - kFerricFractionClampEpsilon);
+}
+
+[[nodiscard]] double ComputeLog10FugacityFromFerricFraction(
+    double ferric_fraction, double temperature_k, double pressure_gpa) {
+  const double clamped_ferric_fraction =
+      ClampFerricFractionForInversion(ferric_fraction);
+  const double ferric_ratio =
+      clamped_ferric_fraction / (1.0 - clamped_ferric_fraction);
+  return (std::log10(ferric_ratio) - kFerricFitB -
+          kFerricFitC / temperature_k +
+          ComputeFerricHeatCapacityTermLog10(temperature_k) +
+          ComputePressureIntegralTermLog10(pressure_gpa, temperature_k) -
+          ComputeFerricCompositionTermLog10(temperature_k)) /
+         kFerricFitA;
+}
+
+[[nodiscard]] double ComputeDeltaIwFromFerricFraction(double ferric_fraction,
+                                                      double temperature_k,
+                                                      double pressure_gpa) {
+  const double log10_fugacity_o2 = ComputeLog10FugacityFromFerricFraction(
+      ferric_fraction, temperature_k, pressure_gpa);
+  return log10_fugacity_o2 -
+         ComputeLog10FugacityIw(temperature_k, pressure_gpa);
+}
+
+[[nodiscard]] double ComputeDeepDeltaIwFromActivities(
+    double x_feo_silicate, const Constants& constants) {
+  if (!(x_feo_silicate > 0.0)) {
+    throw std::runtime_error(
+        "ComputeDeepDeltaIwFromActivities requires X_FeO^silicate > 0.");
+  }
+  if (!(constants.deep_redox_feo_activity_coefficient > 0.0)) {
+    throw std::runtime_error(
+        "deep_redox_feo_activity_coefficient must be positive.");
+  }
+  if (!(constants.deep_redox_fe_alloy_activity > 0.0)) {
+    throw std::runtime_error("deep_redox_fe_alloy_activity must be positive.");
+  }
+
+  const double a_feo_silicate =
+      constants.deep_redox_feo_activity_coefficient * x_feo_silicate;
+  const double activity_ratio =
+      a_feo_silicate / constants.deep_redox_fe_alloy_activity;
+  return 2.0 *
+         SafeLog10(activity_ratio, "a_FeO^silicate / a_Fe^alloy");
+}
+
 [[nodiscard]] double ComputeSurfaceTemperatureK(double equilibration_temperature_k,
                                                 double equilibration_pressure_gpa,
                                                 const Constants& constants) {
@@ -1191,18 +1259,78 @@ constexpr OxideCellEosParams kFerrousCellEos{1180.10, 24.22, 3.382, 0.012, 35.70
 
 [[nodiscard]] double ComputeDeltaIwSurfaceFromFerricFraction(
     double ferric_fraction, double surface_temperature_k) {
-  const double clamped_ferric_fraction =
-      std::clamp(ferric_fraction, 1.0e-12, 1.0 - 1.0e-12);
-  const double ferric_ratio =
-      clamped_ferric_fraction / (1.0 - clamped_ferric_fraction);
-  const double log10_fugacity_o2 =
-      (std::log10(ferric_ratio) - kFerricFitB -
-       kFerricFitC / surface_temperature_k +
-       ComputeFerricHeatCapacityTermLog10(surface_temperature_k) -
-       ComputeFerricCompositionTermLog10(surface_temperature_k)) /
-      kFerricFitA;
-  return log10_fugacity_o2 -
-         ComputeLog10FugacityIw(surface_temperature_k, kReferencePressureGpa);
+  return ComputeDeltaIwFromFerricFraction(ferric_fraction, surface_temperature_k,
+                                          kReferencePressureGpa);
+}
+
+[[nodiscard]] double ComputeSelfOxidationReactionExtentMol(
+    const SilicateIronInventory& mixed_preoxidation_iron,
+    double ferric_fraction_equilibrium) {
+  const double max_reaction_extent_mol = mixed_preoxidation_iron.feo_mol / 3.0;
+  const double raw_reaction_extent_mol =
+      mixed_preoxidation_iron.total_fe_mol() > 0.0
+          ? mixed_preoxidation_iron.total_fe_mol() *
+                (ferric_fraction_equilibrium -
+                 mixed_preoxidation_iron.ferric_fraction()) /
+                (2.0 + ferric_fraction_equilibrium)
+          : 0.0;
+  return std::clamp(raw_reaction_extent_mol, 0.0,
+                    std::max(0.0, max_reaction_extent_mol));
+}
+
+[[nodiscard]] SilicateIronInventory ApplySelfOxidationReaction(
+    const SilicateIronInventory& mixed_preoxidation_iron,
+    double reaction_extent_mol) {
+  SilicateIronInventory equilibrated_melt_iron = mixed_preoxidation_iron;
+  equilibrated_melt_iron.feo_mol -= 3.0 * reaction_extent_mol;
+  equilibrated_melt_iron.feo1p5_mol += 2.0 * reaction_extent_mol;
+  return equilibrated_melt_iron;
+}
+
+[[nodiscard]] DeepRedoxEquilibriumState SolveDeepRedoxEquilibrium(
+    const SilicateIronInventory& mixed_preoxidation_iron,
+    double temperature_k, double pressure_gpa, double inherited_delta_iw_eq,
+    const Constants& constants) {
+  DeepRedoxEquilibriumState state{};
+  state.ferric_fraction_old = mixed_preoxidation_iron.ferric_fraction();
+  double delta_iw_guess = inherited_delta_iw_eq;
+
+  for (int iteration = 0; iteration < constants.deep_redox_max_iterations;
+       ++iteration) {
+    state.ferric_fraction_equilibrium = std::max(
+        state.ferric_fraction_old,
+        ComputeFerricFractionAtEquilibrium(temperature_k, pressure_gpa,
+                                           delta_iw_guess));
+    state.reaction_extent_mol = ComputeSelfOxidationReactionExtentMol(
+        mixed_preoxidation_iron, state.ferric_fraction_equilibrium);
+    state.equilibrated_melt_iron = ApplySelfOxidationReaction(
+        mixed_preoxidation_iron, state.reaction_extent_mol);
+    state.oxidized_fe0_mass_kg =
+        state.reaction_extent_mol * kMolarMassFeKgPerMol;
+    state.surface_temperature_k =
+        ComputeSurfaceTemperatureK(temperature_k, pressure_gpa, constants);
+    state.deep_delta_iw_eq = ComputeDeepDeltaIwFromActivities(
+        state.equilibrated_melt_iron.feo_mol /
+            state.equilibrated_melt_iron.total_cation_mol(),
+        constants);
+    state.surface_delta_iw = ComputeDeltaIwSurfaceFromFerricFraction(
+        state.equilibrated_melt_iron.ferric_fraction(),
+        state.surface_temperature_k);
+    state.iteration_count = iteration + 1;
+
+    const double scale = std::max(1.0, std::fabs(delta_iw_guess));
+    if (std::fabs(state.deep_delta_iw_eq - delta_iw_guess) / scale <
+        constants.deep_redox_rel_tolerance) {
+      state.equilibrated_melt_redox = MakeRedoxStateFromIronInventory(
+          state.equilibrated_melt_iron, state.deep_delta_iw_eq,
+          state.surface_delta_iw, state.oxidized_fe0_mass_kg);
+      return state;
+    }
+    delta_iw_guess = state.deep_delta_iw_eq;
+  }
+
+  throw std::runtime_error(
+      "SolveDeepRedoxEquilibrium did not converge.");
 }
 
 [[nodiscard]] double RadiusFromMassKg(double mass_kg, const Constants& constants) {
@@ -2168,12 +2296,16 @@ template <typename Func>
     throw std::runtime_error(std::string(label) + " root is not bracketed.");
   }
 
-  const double scale = std::max(std::fabs(upper_bound), 1.0);
+  const double residual_scale =
+      std::max({std::fabs(f_lower), std::fabs(f_upper), 1.0});
   for (int iteration = 0; iteration < max_iterations; ++iteration) {
     const double midpoint = 0.5 * (lower + upper);
     const double f_midpoint = residual(midpoint);
     if (!std::isfinite(f_midpoint)) {
       throw std::runtime_error(std::string(label) + " residual became non-finite during bisection.");
+    }
+    if (std::fabs(f_midpoint) / residual_scale < relative_tolerance) {
+      return midpoint;
     }
 
     if (f_lower * f_midpoint <= 0.0) {
@@ -2184,8 +2316,17 @@ template <typename Func>
       f_lower = f_midpoint;
     }
 
+    const double scale = std::max({std::fabs(lower), std::fabs(upper), 1.0});
     if (std::fabs(upper - lower) / scale < relative_tolerance) {
-      return 0.5 * (lower + upper);
+      const double candidate = 0.5 * (lower + upper);
+      const double f_candidate = residual(candidate);
+      if (!std::isfinite(f_candidate)) {
+        throw std::runtime_error(std::string(label) +
+                                 " residual became non-finite at bisection closeout.");
+      }
+      if (std::fabs(f_candidate) / residual_scale < relative_tolerance) {
+        return candidate;
+      }
     }
   }
 
@@ -2306,15 +2447,8 @@ template <typename Func>
   const double silicate_element_mass_kg = silicate_mass_fraction * silicate_mass_kg;
   const double metal_element_mass_kg =
       partition_coefficient * silicate_mass_fraction * metal_mass_kg;
-  const double atmosphere_mass_kg =
-      total_element_kg - silicate_element_mass_kg - metal_element_mass_kg;
-  if (atmosphere_mass_kg < -1.0e-9 * std::max(total_element_kg, 1.0)) {
-    throw std::runtime_error(std::string(label) +
-                             " atmosphere mass became negative after Henry solve.");
-  }
-
   return {
-      std::max(0.0, atmosphere_mass_kg),
+      std::max(0.0, atmosphere_element_mass_kg),
       silicate_element_mass_kg,
       metal_element_mass_kg,
   };
@@ -2528,46 +2662,26 @@ template <typename Func>
                                    resolved_impactor.redox);
   const SilicateIronInventory mixed_preoxidation_iron =
       AddSilicateIronInventory(target_melt_iron, impactor_silicate_iron);
-  const double ferric_fraction_old = mixed_preoxidation_iron.ferric_fraction();
-  const double ferric_fraction_equilibrium = std::max(
-      ferric_fraction_old,
-      ComputeFerricFractionAtEquilibrium(result.melt_pool.temperature_k,
-                                         result.melt_pool.pressure_gpa,
-                                         planet_before.redox.delta_iw_eq));
-  const double max_reaction_extent_mol = mixed_preoxidation_iron.feo_mol / 3.0;
-  const double raw_reaction_extent_mol =
-      mixed_preoxidation_iron.total_fe_mol() > 0.0
-          ? mixed_preoxidation_iron.total_fe_mol() *
-                (ferric_fraction_equilibrium - ferric_fraction_old) /
-                (2.0 + ferric_fraction_equilibrium)
-          : 0.0;
-  const double reaction_extent_mol =
-      std::clamp(raw_reaction_extent_mol, 0.0, std::max(0.0, max_reaction_extent_mol));
-
-  SilicateIronInventory equilibrated_melt_iron = mixed_preoxidation_iron;
-  equilibrated_melt_iron.feo_mol -= 3.0 * reaction_extent_mol;
-  equilibrated_melt_iron.feo1p5_mol += 2.0 * reaction_extent_mol;
-  const double oxidized_fe0_mass_kg = reaction_extent_mol * kMolarMassFeKgPerMol;
-  const double surface_temperature_k = ComputeSurfaceTemperatureK(
-      result.melt_pool.temperature_k, result.melt_pool.pressure_gpa, constants);
-  const double delta_iw_surface = ComputeDeltaIwSurfaceFromFerricFraction(
-      equilibrated_melt_iron.ferric_fraction(), surface_temperature_k);
-  const RedoxState equilibrated_melt_redox = MakeRedoxStateFromIronInventory(
-      equilibrated_melt_iron, planet_before.redox.delta_iw_eq, delta_iw_surface,
-      oxidized_fe0_mass_kg);
+  const DeepRedoxEquilibriumState deep_redox = SolveDeepRedoxEquilibrium(
+      mixed_preoxidation_iron, result.melt_pool.temperature_k,
+      result.melt_pool.pressure_gpa, planet_before.redox.delta_iw_eq, constants);
+  const double delta_iw_eq_deep = deep_redox.deep_delta_iw_eq;
+  const double oxidized_fe0_mass_kg = deep_redox.oxidized_fe0_mass_kg;
+  const double delta_iw_surface = deep_redox.surface_delta_iw;
+  const RedoxState& equilibrated_melt_redox = deep_redox.equilibrated_melt_redox;
 
   result.dn_metal_silicate = ComputeNitrogenPartitionCoefficient(
       result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
-      planet_before.redox.delta_iw_eq, resolved_impactor.alloy, constants);
+      delta_iw_eq_deep, resolved_impactor.alloy, constants);
   result.dh_metal_silicate = ComputeHydrogenPartitionCoefficient(
       result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
-      planet_before.redox.delta_iw_eq, resolved_impactor.alloy, constants);
+      delta_iw_eq_deep, resolved_impactor.alloy, constants);
   result.xo_metal = ComputeOxygenMoleFractionInMetal(
       result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
       equilibrated_melt_redox.x_feo_silicate, resolved_impactor.alloy, constants);
   result.dc_metal_silicate = ComputeCarbonPartitionCoefficient(
       result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
-      planet_before.redox.delta_iw_eq, resolved_impactor.alloy.x_s, result.xo_metal,
+      delta_iw_eq_deep, resolved_impactor.alloy.x_s, result.xo_metal,
       constants);
 
   const ElementMassKg old_mantle_volatiles_kg =
@@ -2686,7 +2800,7 @@ template <typename Func>
   if (total_n_before_equilibrium_kg > 0.0) {
     const double delta15n_metal_silicate =
         ComputeNitrogenIsotopeFractionationPermil(
-            result.melt_pool.temperature_k, planet_before.redox.delta_iw_eq,
+            result.melt_pool.temperature_k, delta_iw_eq_deep,
             constants);
     result.delta15n_silicate_permil =
         delta15n_bulk_permil -
@@ -2734,9 +2848,12 @@ template <typename Func>
   planet_after.atmosphere.delta15n_permil = result.delta15n_silicate_permil;
   const SilicateIronInventory unmelted_mantle_iron = ComputeSilicateIronInventory(
       std::max(0.0, target_unmelted_mantle_mass_kg), planet_before.redox);
+  const SilicateIronInventory final_mantle_iron =
+      AddSilicateIronInventory(unmelted_mantle_iron,
+                               deep_redox.equilibrated_melt_iron);
   planet_after.redox = MakeRedoxStateFromIronInventory(
-      AddSilicateIronInventory(unmelted_mantle_iron, equilibrated_melt_iron),
-      planet_before.redox.delta_iw_eq, delta_iw_surface, oxidized_fe0_mass_kg);
+      final_mantle_iron, delta_iw_eq_deep, delta_iw_surface,
+      oxidized_fe0_mass_kg);
   ApplyAtmosphereSpeciationFromDeltaIw(&planet_after.atmosphere,
                                        planet_after.redox.delta_iw_surface);
 
@@ -2954,26 +3071,42 @@ template <typename Func>
   return step_count;
 }
 
-[[nodiscard]] Impactor MakePrecomputeImpactor(std::size_t step_index,
-                                              const Constants& constants) {
+[[nodiscard]] Impactor MakeImpactorSkeleton(const std::string& label,
+                                            GrowthPhase phase,
+                                            ImpactorClass impactor_class,
+                                            double mass_earth,
+                                            bool is_differentiated,
+                                            const Constants& constants) {
   Impactor impactor{};
-  impactor.label = "PRE-" + ZeroPadded(step_index, 5);
-  impactor.phase = GrowthPhase::kPrecomputeAccretion;
-  impactor.impactor_class = ImpactorClass::kECLikeUndifferentiated;
-  impactor.mass_kg = EarthMassToKg(constants.precompute_step_mass_earth, constants);
+  impactor.label = label;
+  impactor.phase = phase;
+  impactor.impactor_class = impactor_class;
+  impactor.mass_kg = EarthMassToKg(mass_earth, constants);
   impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
-  impactor.is_differentiated = false;
-  impactor.bulk_inventory_source = InventorySource::kEcBulk;
+  impactor.is_differentiated = is_differentiated;
+  impactor.bulk_inventory_source = InventorySource::kNone;
   impactor.silicate_inventory_source = InventorySource::kNone;
   impactor.metal_inventory_source = InventorySource::kNone;
   impactor.alloy_source = InventorySource::kNone;
-  impactor.bulk_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.bulk_volatiles_ppm = {};
   impactor.silicate_volatiles_ppm = {};
   impactor.metal_volatiles_ppm = {};
-  impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
+  impactor.delta15n_silicate_permil = 0.0;
   impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   impactor.alloy = constants.representative_ec_alloy;
   impactor.redox_source = RedoxSource::kImpactorValue;
+  return impactor;
+}
+
+[[nodiscard]] Impactor MakePrecomputeImpactor(std::size_t step_index,
+                                              const Constants& constants) {
+  Impactor impactor = MakeImpactorSkeleton(
+      "PRE-" + ZeroPadded(step_index, 5), GrowthPhase::kPrecomputeAccretion,
+      ImpactorClass::kECLikeUndifferentiated,
+      constants.precompute_step_mass_earth, false, constants);
+  impactor.bulk_inventory_source = InventorySource::kEcBulk;
+  impactor.bulk_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
   impactor.Validate();
   return impactor;
 }
@@ -2981,47 +3114,28 @@ template <typename Func>
 [[nodiscard]] Impactor MakeEcDifferentiatedGi(std::size_t gi_number,
                                               double impactor_mass_earth,
                                               const Constants& constants) {
-  Impactor impactor{};
-  impactor.label = "GI" + std::to_string(gi_number);
-  impactor.phase = GrowthPhase::kGiantImpact;
-  impactor.impactor_class = ImpactorClass::kECLikeDifferentiated;
-  impactor.mass_kg = EarthMassToKg(impactor_mass_earth, constants);
-  impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
-  impactor.is_differentiated = true;
-  impactor.bulk_inventory_source = InventorySource::kNone;
+  Impactor impactor = MakeImpactorSkeleton(
+      "GI" + std::to_string(gi_number), GrowthPhase::kGiantImpact,
+      ImpactorClass::kECLikeDifferentiated, impactor_mass_earth, true,
+      constants);
   impactor.silicate_inventory_source =
       InventorySource::kPrecomputeOutputAt0p10EarthMass;
   impactor.metal_inventory_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
   impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
-  impactor.bulk_volatiles_ppm = {};
-  impactor.silicate_volatiles_ppm = {};
-  impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
-  impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
-  impactor.alloy = constants.representative_ec_alloy;
   impactor.redox_source = RedoxSource::kPrecomputeOutputAt0p10EarthMass;
   impactor.Validate();
   return impactor;
 }
 
 [[nodiscard]] Impactor MakeGi8CcEvent(const Constants& constants) {
-  Impactor impactor{};
-  impactor.label = "GI8";
-  impactor.phase = GrowthPhase::kGiantImpact;
-  impactor.impactor_class = ImpactorClass::kCILikeDifferentiated;
-  impactor.mass_kg = EarthMassToKg(constants.standard_gi_mass_earth, constants);
-  impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
-  impactor.is_differentiated = true;
+  Impactor impactor = MakeImpactorSkeleton(
+      "GI8", GrowthPhase::kGiantImpact, ImpactorClass::kCILikeDifferentiated,
+      constants.standard_gi_mass_earth, true, constants);
   impactor.bulk_inventory_source = InventorySource::kCiBulk;
-  impactor.silicate_inventory_source = InventorySource::kNone;
-  impactor.metal_inventory_source = InventorySource::kNone;
   impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
   impactor.bulk_volatiles_ppm = constants.ci_bulk_volatiles_ppm;
-  impactor.silicate_volatiles_ppm = {};
-  impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ci_delta15n_permil;
-  impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
-  impactor.alloy = constants.representative_ec_alloy;
   impactor.redox_source = RedoxSource::kCurrentTargetMantle;
   impactor.Validate();
   return impactor;
@@ -3035,24 +3149,14 @@ template <typename Func>
 }
 
 [[nodiscard]] Impactor MakeLateVeneerImpactor(const Constants& constants) {
-  Impactor impactor{};
-  impactor.label = "LateVeneer";
-  impactor.phase = GrowthPhase::kLateVeneer;
-  impactor.impactor_class = ImpactorClass::kECLikeUndifferentiated;
-  impactor.mass_kg = EarthMassToKg(constants.late_veneer_mass_earth, constants);
-  impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
-  impactor.is_differentiated = false;
+  Impactor impactor = MakeImpactorSkeleton(
+      "LateVeneer", GrowthPhase::kLateVeneer,
+      ImpactorClass::kECLikeUndifferentiated, constants.late_veneer_mass_earth,
+      false, constants);
   impactor.bulk_inventory_source = InventorySource::kEcBulk;
-  impactor.silicate_inventory_source = InventorySource::kNone;
-  impactor.metal_inventory_source = InventorySource::kNone;
   impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
   impactor.bulk_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
-  impactor.silicate_volatiles_ppm = {};
-  impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
-  impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
-  impactor.alloy = constants.representative_ec_alloy;
-  impactor.redox_source = RedoxSource::kImpactorValue;
   impactor.Validate();
   return impactor;
 }
@@ -3319,6 +3423,8 @@ void PrintSimplifiedRunSummary(const Constants& constants,
             << run.final_planet.redox.fe3_over_fe_total << std::endl;
   std::cout << "simple_run_final_mantle_x_feo_silicate="
             << run.final_planet.redox.x_feo_silicate << std::endl;
+  std::cout << "simple_run_final_delta_iw_eq="
+            << run.final_planet.redox.delta_iw_eq << std::endl;
   std::cout << "simple_run_final_delta_iw_surface="
             << run.final_planet.redox.delta_iw_surface << std::endl;
   std::cout << "simple_run_final_oxidized_fe0_mass_kg="

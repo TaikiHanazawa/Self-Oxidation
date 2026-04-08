@@ -14,107 +14,105 @@ text { font-family: Georgia, "Times New Roman", serif; fill: #17202a; }
 <rect x="90.00" y="130.00" width="360.00" height="360.00" fill="none" stroke="#333333" stroke-width="1.2" opacity="1.0"/>
 <line x1="90.00" y1="490.00" x2="450.00" y2="490.00" stroke="#d0d0d0" stroke-width="1"/>
 <text x="80.00" y="494.00" class="tick" text-anchor="end">10^-4</text>
-<line x1="90.00" y1="418.00" x2="450.00" y2="418.00" stroke="#d0d0d0" stroke-width="1"/>
-<text x="80.00" y="422.00" class="tick" text-anchor="end">10^-3</text>
-<line x1="90.00" y1="346.00" x2="450.00" y2="346.00" stroke="#d0d0d0" stroke-width="1"/>
-<text x="80.00" y="350.00" class="tick" text-anchor="end">10^-2</text>
-<line x1="90.00" y1="274.00" x2="450.00" y2="274.00" stroke="#d0d0d0" stroke-width="1"/>
-<text x="80.00" y="278.00" class="tick" text-anchor="end">10^-1</text>
-<line x1="90.00" y1="202.00" x2="450.00" y2="202.00" stroke="#d0d0d0" stroke-width="1"/>
-<text x="80.00" y="206.00" class="tick" text-anchor="end">10^0</text>
+<line x1="90.00" y1="400.00" x2="450.00" y2="400.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="404.00" class="tick" text-anchor="end">10^-3</text>
+<line x1="90.00" y1="310.00" x2="450.00" y2="310.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="314.00" class="tick" text-anchor="end">10^-2</text>
+<line x1="90.00" y1="220.00" x2="450.00" y2="220.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="224.00" class="tick" text-anchor="end">10^-1</text>
 <line x1="90.00" y1="130.00" x2="450.00" y2="130.00" stroke="#d0d0d0" stroke-width="1"/>
-<text x="80.00" y="134.00" class="tick" text-anchor="end">10^1</text>
+<text x="80.00" y="134.00" class="tick" text-anchor="end">10^0</text>
 <line x1="130.00" y1="130.00" x2="130.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
 <text x="130.00" y="514.00" class="label" text-anchor="middle">C</text>
 <line x1="270.00" y1="130.00" x2="270.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
 <text x="270.00" y="514.00" class="label" text-anchor="middle">N</text>
 <line x1="410.00" y1="130.00" x2="410.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
 <text x="410.00" y="514.00" class="label" text-anchor="middle">H</text>
-<polygon points="130.00,323.01 270.00,402.03 410.00,287.37 410.00,360.07 270.00,436.50 130.00,412.30" fill="#9fe2bf" opacity="0.75" stroke="none" stroke-width="1.0"/>
-<polyline points="130.00,342.94 270.00,414.74 410.00,306.12" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
-<polyline points="130.00,374.63 270.00,356.15 410.00,397.27" fill="none" stroke="#8c8c8c" stroke-width="2.4"/>
-<circle cx="130.00" cy="374.63" r="4.00" fill="#8c8c8c" stroke="none"/>
-<circle cx="270.00" cy="356.15" r="4.00" fill="#8c8c8c" stroke="none"/>
-<circle cx="410.00" cy="397.27" r="4.00" fill="#8c8c8c" stroke="none"/>
-<polyline points="130.00,357.91 270.00,390.63 410.00,422.89" fill="none" stroke="#f39c12" stroke-width="2.4"/>
-<circle cx="130.00" cy="357.91" r="4.00" fill="#f39c12" stroke="none"/>
-<circle cx="270.00" cy="390.63" r="4.00" fill="#f39c12" stroke="none"/>
-<circle cx="410.00" cy="422.89" r="4.00" fill="#f39c12" stroke="none"/>
-<polyline points="130.00,349.58 270.00,401.43 410.00,421.61" fill="none" stroke="#e67e22" stroke-width="2.4"/>
-<circle cx="130.00" cy="349.58" r="4.00" fill="#e67e22" stroke="none"/>
-<circle cx="270.00" cy="401.43" r="4.00" fill="#e67e22" stroke="none"/>
-<circle cx="410.00" cy="421.61" r="4.00" fill="#e67e22" stroke="none"/>
-<polyline points="130.00,345.22 270.00,406.54 410.00,419.83" fill="none" stroke="#d35400" stroke-width="2.4"/>
-<circle cx="130.00" cy="345.22" r="4.00" fill="#d35400" stroke="none"/>
-<circle cx="270.00" cy="406.54" r="4.00" fill="#d35400" stroke="none"/>
-<circle cx="410.00" cy="419.83" r="4.00" fill="#d35400" stroke="none"/>
-<polyline points="130.00,342.53 270.00,410.17 410.00,418.45" fill="none" stroke="#c0392b" stroke-width="2.4"/>
-<circle cx="130.00" cy="342.53" r="4.00" fill="#c0392b" stroke="none"/>
-<circle cx="270.00" cy="410.17" r="4.00" fill="#c0392b" stroke="none"/>
-<circle cx="410.00" cy="418.45" r="4.00" fill="#c0392b" stroke="none"/>
-<polyline points="130.00,340.67 270.00,413.33 410.00,417.35" fill="none" stroke="#a93226" stroke-width="2.4"/>
-<circle cx="130.00" cy="340.67" r="4.00" fill="#a93226" stroke="none"/>
-<circle cx="270.00" cy="413.33" r="4.00" fill="#a93226" stroke="none"/>
-<circle cx="410.00" cy="417.35" r="4.00" fill="#a93226" stroke="none"/>
-<polyline points="130.00,339.30 270.00,416.74 410.00,415.98" fill="none" stroke="#922b21" stroke-width="2.4"/>
-<circle cx="130.00" cy="339.30" r="4.00" fill="#922b21" stroke="none"/>
-<circle cx="270.00" cy="416.74" r="4.00" fill="#922b21" stroke="none"/>
-<circle cx="410.00" cy="415.98" r="4.00" fill="#922b21" stroke="none"/>
-<polyline points="130.00,338.22 270.00,421.13 410.00,414.00" fill="none" stroke="#7b241c" stroke-width="2.4"/>
-<circle cx="130.00" cy="338.22" r="4.00" fill="#7b241c" stroke="none"/>
-<circle cx="270.00" cy="421.13" r="4.00" fill="#7b241c" stroke="none"/>
-<circle cx="410.00" cy="414.00" r="4.00" fill="#7b241c" stroke="none"/>
-<polyline points="130.00,269.17 270.00,289.23 410.00,313.81" fill="none" stroke="#641e16" stroke-width="2.4"/>
-<circle cx="130.00" cy="269.17" r="4.00" fill="#641e16" stroke="none"/>
-<circle cx="270.00" cy="289.23" r="4.00" fill="#641e16" stroke="none"/>
-<circle cx="410.00" cy="313.81" r="4.00" fill="#641e16" stroke="none"/>
-<polyline points="130.00,272.84 270.00,310.81 410.00,334.30" fill="none" stroke="#4a235a" stroke-width="2.4"/>
-<circle cx="130.00" cy="272.84" r="4.00" fill="#4a235a" stroke="none"/>
-<circle cx="270.00" cy="310.81" r="4.00" fill="#4a235a" stroke="none"/>
-<circle cx="410.00" cy="334.30" r="4.00" fill="#4a235a" stroke="none"/>
-<polyline points="130.00,282.43 270.00,323.51 410.00,335.40" fill="none" stroke="#1f77b4" stroke-width="2.4"/>
-<circle cx="130.00" cy="282.43" r="4.00" fill="#1f77b4" stroke="none"/>
-<circle cx="270.00" cy="323.51" r="4.00" fill="#1f77b4" stroke="none"/>
-<circle cx="410.00" cy="335.40" r="4.00" fill="#1f77b4" stroke="none"/>
+<polygon points="130.00,281.27 270.00,380.03 410.00,236.71 410.00,327.59 270.00,423.13 130.00,392.87" fill="#9fe2bf" opacity="0.75" stroke="none" stroke-width="1.0"/>
+<polyline points="130.00,306.17 270.00,395.92 410.00,260.15" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
+<polyline points="130.00,214.78 270.00,200.03 410.00,241.31" fill="none" stroke="#8c8c8c" stroke-width="2.4"/>
+<circle cx="130.00" cy="214.78" r="4.00" fill="#8c8c8c" stroke="none"/>
+<circle cx="270.00" cy="200.03" r="4.00" fill="#8c8c8c" stroke="none"/>
+<circle cx="410.00" cy="241.31" r="4.00" fill="#8c8c8c" stroke="none"/>
+<polyline points="130.00,345.37 270.00,322.86 410.00,373.08" fill="none" stroke="#f39c12" stroke-width="2.4"/>
+<circle cx="130.00" cy="345.37" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="270.00" cy="322.86" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="410.00" cy="373.08" r="4.00" fill="#f39c12" stroke="none"/>
+<polyline points="130.00,326.31 270.00,365.40 410.00,406.33" fill="none" stroke="#e67e22" stroke-width="2.4"/>
+<circle cx="130.00" cy="326.31" r="4.00" fill="#e67e22" stroke="none"/>
+<circle cx="270.00" cy="365.40" r="4.00" fill="#e67e22" stroke="none"/>
+<circle cx="410.00" cy="406.33" r="4.00" fill="#e67e22" stroke="none"/>
+<polyline points="130.00,316.18 270.00,378.13 410.00,405.14" fill="none" stroke="#d35400" stroke-width="2.4"/>
+<circle cx="130.00" cy="316.18" r="4.00" fill="#d35400" stroke="none"/>
+<circle cx="270.00" cy="378.13" r="4.00" fill="#d35400" stroke="none"/>
+<circle cx="410.00" cy="405.14" r="4.00" fill="#d35400" stroke="none"/>
+<polyline points="130.00,310.84 270.00,384.10 410.00,403.10" fill="none" stroke="#c0392b" stroke-width="2.4"/>
+<circle cx="130.00" cy="310.84" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="270.00" cy="384.10" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="410.00" cy="403.10" r="4.00" fill="#c0392b" stroke="none"/>
+<polyline points="130.00,307.51 270.00,388.40 410.00,401.49" fill="none" stroke="#a93226" stroke-width="2.4"/>
+<circle cx="130.00" cy="307.51" r="4.00" fill="#a93226" stroke="none"/>
+<circle cx="270.00" cy="388.40" r="4.00" fill="#a93226" stroke="none"/>
+<circle cx="410.00" cy="401.49" r="4.00" fill="#a93226" stroke="none"/>
+<polyline points="130.00,305.21 270.00,392.20 410.00,400.21" fill="none" stroke="#922b21" stroke-width="2.4"/>
+<circle cx="130.00" cy="305.21" r="4.00" fill="#922b21" stroke="none"/>
+<circle cx="270.00" cy="392.20" r="4.00" fill="#922b21" stroke="none"/>
+<circle cx="410.00" cy="400.21" r="4.00" fill="#922b21" stroke="none"/>
+<polyline points="130.00,303.51 270.00,396.38 410.00,398.57" fill="none" stroke="#7b241c" stroke-width="2.4"/>
+<circle cx="130.00" cy="303.51" r="4.00" fill="#7b241c" stroke="none"/>
+<circle cx="270.00" cy="396.38" r="4.00" fill="#7b241c" stroke="none"/>
+<circle cx="410.00" cy="398.57" r="4.00" fill="#7b241c" stroke="none"/>
+<polyline points="130.00,302.18 270.00,401.85 410.00,396.13" fill="none" stroke="#641e16" stroke-width="2.4"/>
+<circle cx="130.00" cy="302.18" r="4.00" fill="#641e16" stroke="none"/>
+<circle cx="270.00" cy="401.85" r="4.00" fill="#641e16" stroke="none"/>
+<circle cx="410.00" cy="396.13" r="4.00" fill="#641e16" stroke="none"/>
+<polyline points="130.00,214.14 270.00,239.50 410.00,269.46" fill="none" stroke="#4a235a" stroke-width="2.4"/>
+<circle cx="130.00" cy="214.14" r="4.00" fill="#4a235a" stroke="none"/>
+<circle cx="270.00" cy="239.50" r="4.00" fill="#4a235a" stroke="none"/>
+<circle cx="410.00" cy="269.46" r="4.00" fill="#4a235a" stroke="none"/>
+<polyline points="130.00,218.76 270.00,267.04 410.00,295.04" fill="none" stroke="#1f77b4" stroke-width="2.4"/>
+<circle cx="130.00" cy="218.76" r="4.00" fill="#1f77b4" stroke="none"/>
+<circle cx="270.00" cy="267.04" r="4.00" fill="#1f77b4" stroke="none"/>
+<circle cx="410.00" cy="295.04" r="4.00" fill="#1f77b4" stroke="none"/>
 <text x="498.00" y="118.00" class="small" text-anchor="start">Main accretion</text>
-<rect x="486.00" y="130.00" width="192.00" height="240.00" fill="#ffffff" stroke="#cccccc" stroke-width="1.0" opacity="0.92"/>
+<rect x="486.00" y="130.00" width="192.00" height="258.00" fill="#ffffff" stroke="#cccccc" stroke-width="1.0" opacity="0.92"/>
 <polyline points="498.00,148.00 518.00,148.00" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
 <text x="526.00" y="152.00" class="small" text-anchor="start">BSE mean</text>
 <rect x="501.00" y="160.00" width="14.00" height="10.00" fill="#9fe2bf" stroke="none" stroke-width="1.0" opacity="0.75"/>
 <text x="526.00" y="170.00" class="small" text-anchor="start">BSE range</text>
 <polyline points="498.00,184.00 518.00,184.00" fill="none" stroke="#8c8c8c" stroke-width="2.4"/>
 <circle cx="508.00" cy="184.00" r="3.60" fill="#8c8c8c" stroke="none"/>
-<text x="526.00" y="188.00" class="small" text-anchor="start">End of early accretion</text>
+<text x="526.00" y="188.00" class="small" text-anchor="start">Initial state</text>
 <polyline points="498.00,202.00 518.00,202.00" fill="none" stroke="#f39c12" stroke-width="2.4"/>
 <circle cx="508.00" cy="202.00" r="3.60" fill="#f39c12" stroke="none"/>
-<text x="526.00" y="206.00" class="small" text-anchor="start">GI1</text>
+<text x="526.00" y="206.00" class="small" text-anchor="start">End of early accretion</text>
 <polyline points="498.00,220.00 518.00,220.00" fill="none" stroke="#e67e22" stroke-width="2.4"/>
 <circle cx="508.00" cy="220.00" r="3.60" fill="#e67e22" stroke="none"/>
-<text x="526.00" y="224.00" class="small" text-anchor="start">GI2</text>
+<text x="526.00" y="224.00" class="small" text-anchor="start">GI1</text>
 <polyline points="498.00,238.00 518.00,238.00" fill="none" stroke="#d35400" stroke-width="2.4"/>
 <circle cx="508.00" cy="238.00" r="3.60" fill="#d35400" stroke="none"/>
-<text x="526.00" y="242.00" class="small" text-anchor="start">GI3</text>
+<text x="526.00" y="242.00" class="small" text-anchor="start">GI2</text>
 <polyline points="498.00,256.00 518.00,256.00" fill="none" stroke="#c0392b" stroke-width="2.4"/>
 <circle cx="508.00" cy="256.00" r="3.60" fill="#c0392b" stroke="none"/>
-<text x="526.00" y="260.00" class="small" text-anchor="start">GI4</text>
+<text x="526.00" y="260.00" class="small" text-anchor="start">GI3</text>
 <polyline points="498.00,274.00 518.00,274.00" fill="none" stroke="#a93226" stroke-width="2.4"/>
 <circle cx="508.00" cy="274.00" r="3.60" fill="#a93226" stroke="none"/>
-<text x="526.00" y="278.00" class="small" text-anchor="start">GI5</text>
+<text x="526.00" y="278.00" class="small" text-anchor="start">GI4</text>
 <polyline points="498.00,292.00 518.00,292.00" fill="none" stroke="#922b21" stroke-width="2.4"/>
 <circle cx="508.00" cy="292.00" r="3.60" fill="#922b21" stroke="none"/>
-<text x="526.00" y="296.00" class="small" text-anchor="start">GI6</text>
+<text x="526.00" y="296.00" class="small" text-anchor="start">GI5</text>
 <polyline points="498.00,310.00 518.00,310.00" fill="none" stroke="#7b241c" stroke-width="2.4"/>
 <circle cx="508.00" cy="310.00" r="3.60" fill="#7b241c" stroke="none"/>
-<text x="526.00" y="314.00" class="small" text-anchor="start">GI7</text>
+<text x="526.00" y="314.00" class="small" text-anchor="start">GI6</text>
 <polyline points="498.00,328.00 518.00,328.00" fill="none" stroke="#641e16" stroke-width="2.4"/>
 <circle cx="508.00" cy="328.00" r="3.60" fill="#641e16" stroke="none"/>
-<text x="526.00" y="332.00" class="small" text-anchor="start">GI8</text>
+<text x="526.00" y="332.00" class="small" text-anchor="start">GI7</text>
 <polyline points="498.00,346.00 518.00,346.00" fill="none" stroke="#4a235a" stroke-width="2.4"/>
 <circle cx="508.00" cy="346.00" r="3.60" fill="#4a235a" stroke="none"/>
-<text x="526.00" y="350.00" class="small" text-anchor="start">GI9-Theia</text>
+<text x="526.00" y="350.00" class="small" text-anchor="start">GI8</text>
 <polyline points="498.00,364.00 518.00,364.00" fill="none" stroke="#1f77b4" stroke-width="2.4"/>
 <circle cx="508.00" cy="364.00" r="3.60" fill="#1f77b4" stroke="none"/>
-<text x="526.00" y="368.00" class="small" text-anchor="start">Final after late veneer</text>
+<text x="526.00" y="368.00" class="small" text-anchor="start">GI9-Theia</text>
 <text x="30.00" y="310.00" class="label" text-anchor="start">Abundance / CI chondrites</text>
 <text x="490.00" y="622.00" class="small" text-anchor="middle">Single-panel view: end of early accretion, each GI event, and the final post-late-veneer composition are all plotted as lines.</text>
 </svg>

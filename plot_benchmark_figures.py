@@ -6,12 +6,17 @@ import csv
 import math
 import subprocess
 from pathlib import Path
-from typing import Iterable
 
 CI_MODEL_PPM = {
     'C': 35000.0,
     'N': 1500.0,
     'H': 6900.0,
+}
+
+INITIAL_MODEL_PPM = {
+    'C': 4000.0,
+    'N': 250.0,
+    'H': 400.0,
 }
 
 CURRENT_BSE_RANGE_PPM = {
@@ -24,8 +29,6 @@ CURRENT_BSE_MEAN_PPM = {
     key: 0.5 * (bounds[0] + bounds[1]) for key, bounds in CURRENT_BSE_RANGE_PPM.items()
 }
 
-SAKURABA_MAIN_TARGETS = [0.10, 0.30, 0.50, 0.70, 0.995]
-SAKURABA_LATE_TARGETS = [0.995, 1.0]
 
 
 def compile_makeearth(source: Path, binary: Path) -> None:
@@ -57,15 +60,6 @@ def read_history(history_csv: Path) -> list[dict[str, object]]:
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
-
-def nearest_row(rows: Iterable[dict[str, object]], target_mass: float) -> dict[str, object]:
-    return min(
-        rows,
-        key=lambda row: (
-            abs(float(row['planet_mass_after_earth']) - target_mass),
-            int(float(row['step_index'])),
-        ),
-    )
 
 
 def unique_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -159,6 +153,8 @@ def is_precompute_label(label: str) -> bool:
 
 def sakuraba_snapshot_label(row: dict[str, object]) -> str:
     label = str(row['label'])
+    if label == 'Initial':
+        return 'Initial state'
     if is_precompute_label(label):
         return 'End of early accretion'
     if label.startswith('GI'):
@@ -172,7 +168,15 @@ def sakuraba_main_snapshots(rows: list[dict[str, object]]) -> list[dict[str, obj
     precompute_rows = [row for row in rows if is_precompute_label(str(row['label']))]
     gi_rows = [row for row in rows if str(row['label']).startswith('GI')]
     late_rows = [row for row in rows if str(row['label']).startswith('LateVeneer')]
-    snapshots: list[dict[str, object]] = []
+    initial_snapshot = {
+        'step_index': -1,
+        'label': 'Initial',
+        'planet_mass_after_earth': 0.01,
+        'bse_carbon_ppm': INITIAL_MODEL_PPM['C'],
+        'bse_hydrogen_ppm': INITIAL_MODEL_PPM['H'],
+        'bse_nitrogen_ppm': INITIAL_MODEL_PPM['N'],
+    }
+    snapshots: list[dict[str, object]] = [initial_snapshot]
     if precompute_rows:
         snapshots.append(precompute_rows[-1])
     snapshots.extend(gi_rows)
@@ -194,7 +198,7 @@ def shi_reference_markers(rows: list[dict[str, object]]) -> list[dict[str, objec
 def draw_sakuraba_bse_panel(parts: list[str], rows: list[dict[str, object]], panel_x: float, panel_y: float,
                             panel_w: float, panel_h: float, legend_x: float,
                             panel_label: str | None = None, legend_title: str = 'Accretion history') -> None:
-    ymin, ymax = 1.0e-4, 1.0e1
+    ymin, ymax = 1.0e-4, 1.0e0
     categories = ['C', 'N', 'H']
     snapshots = sakuraba_main_snapshots(rows)
     palette = [
@@ -221,7 +225,7 @@ def draw_sakuraba_bse_panel(parts: list[str], rows: list[dict[str, object]], pan
         parts.append(text(panel_x - 24, panel_y - 12, panel_label, 'panel'))
     parts.append(rect(plot_left, plot_top, panel_w, panel_h, 'none', '#333333', 1.2))
 
-    for tick_exp in range(-4, 2):
+    for tick_exp in range(-4, 1):
         tick_value = 10 ** tick_exp
         y = map_log10(tick_value, ymin, ymax, plot_bottom, plot_top)
         parts.append(f'<line x1="{plot_left:.2f}" y1="{y:.2f}" x2="{plot_right:.2f}" y2="{y:.2f}" stroke="#d0d0d0" stroke-width="1"/>')
