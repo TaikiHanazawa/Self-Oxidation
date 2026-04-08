@@ -202,6 +202,7 @@ struct StepResult {
   double dn_metal_silicate = std::numeric_limits<double>::quiet_NaN();
   double dh_metal_silicate = std::numeric_limits<double>::quiet_NaN();
   double dc_metal_silicate = std::numeric_limits<double>::quiet_NaN();
+  double xo_metal = std::numeric_limits<double>::quiet_NaN();
   double delta15n_silicate_permil = std::numeric_limits<double>::quiet_NaN();
   double delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   double erosion_fraction = 0.0;
@@ -214,6 +215,7 @@ struct DifferentiatedImpactorSnapshot {
   ElementPpm metal_volatiles_ppm{};
   double delta15n_silicate_permil = 0.0;
   double delta15n_metal_permil = 0.0;
+  AlloyComposition alloy{};
 };
 
 struct SimplifiedRunResult {
@@ -254,11 +256,39 @@ struct Constants {
   double geotherm_gradient_k_m = 1.0e-4;
   double melt_pool_convergence_tolerance_m = 1.0;
   int melt_pool_max_iterations = 100;
-  double placeholder_dn_metal_silicate = 20.0;
-  double placeholder_dh_metal_silicate = 1.0;
-  double placeholder_dc_metal_silicate = 50.0;
   double placeholder_delta_iw_surface = -2.0;
-  double placeholder_delta15n_metal_silicate_permil = -5.0;
+
+  double fixed_nbo_over_t = 2.5;
+
+  double dn_intercept = -0.38;
+  double dn_temperature_coeff = 3370.0;
+  double dn_pressure_coeff = 75.0;
+  double dn_nbo_coeff = 0.56;
+  double dn_delta_iw_coeff = 0.47;
+  double dn_xs_coeff = 1.97;
+  double dn_xc_coeff = 5.73;
+  double dn_xni_coeff = 3.88;
+  double dn_xsi_coeff = 5.52;
+
+  double delta15n_a = -1.6e7;
+  double delta15n_b = -1.1e7;
+
+  double dh_intercept = 2.31;
+  double dh_temperature_coeff = -1542.0;
+  double dh_pressure_coeff = -38.9;
+  double dh_xc_coeff = 6.69;
+
+  double oxygen_lnK_temperature_coeff = -6910.0;
+  double oxygen_lnK_intercept = 3.52;
+  double oxygen_lnK_pressure_coeff = 71.0;
+
+  double dc_intercept = 1.49;
+  double dc_temperature_coeff = 3000.0;
+  double dc_pressure_coeff = -235.0;
+  double dc_xs_coeff = 9.6;
+  double dc_xo_coeff = -19.5;
+  double dc_nbo_coeff = -0.118;
+  double dc_delta_iw_coeff = -0.238;
   double placeholder_atmosphere_fraction_carbon = 0.10;
   double placeholder_atmosphere_fraction_hydrogen = 0.25;
   double placeholder_atmosphere_fraction_nitrogen = 0.10;
@@ -376,6 +406,151 @@ struct Constants {
 
 [[nodiscard]] double DegreesToRadians(double degrees) {
   return degrees * Pi() / 180.0;
+}
+
+[[nodiscard]] double SafeLog10(double value, const char* label) {
+  if (!(value > 0.0)) {
+    throw std::runtime_error(std::string(label) + " must be positive before log10.");
+  }
+  return std::log10(value);
+}
+
+[[nodiscard]] double SafeOneMinus(double value, const char* label) {
+  const double remainder = 1.0 - value;
+  if (!(remainder > 0.0)) {
+    throw std::runtime_error(std::string(label) + " must be < 1.");
+  }
+  return remainder;
+}
+
+[[nodiscard]] double ComputeNitrogenPartitionCoefficient(double temperature_k,
+                                                         double pressure_gpa,
+                                                         double delta_iw_eq,
+                                                         const AlloyComposition& alloy,
+                                                         const Constants& constants) {
+  alloy.Validate();
+  if (temperature_k <= 0.0) {
+    throw std::runtime_error("ComputeNitrogenPartitionCoefficient requires T > 0.");
+  }
+
+  const double log10_dn = constants.dn_intercept +
+                          constants.dn_temperature_coeff / temperature_k +
+                          constants.dn_pressure_coeff * pressure_gpa / temperature_k +
+                          constants.dn_nbo_coeff * constants.fixed_nbo_over_t +
+                          constants.dn_delta_iw_coeff * delta_iw_eq -
+                          constants.dn_xs_coeff * alloy.x_s -
+                          constants.dn_xc_coeff * alloy.x_c -
+                          constants.dn_xni_coeff * alloy.x_ni -
+                          constants.dn_xsi_coeff * alloy.x_si;
+  return std::pow(10.0, log10_dn);
+}
+
+[[nodiscard]] double ComputeNitrogenIsotopeFractionationPermil(double temperature_k,
+                                                               double delta_iw_eq,
+                                                               const Constants& constants) {
+  if (temperature_k <= 0.0) {
+    throw std::runtime_error("ComputeNitrogenIsotopeFractionationPermil requires T > 0.");
+  }
+  return constants.delta15n_a / (temperature_k * temperature_k) +
+         constants.delta15n_b * delta_iw_eq / (temperature_k * temperature_k);
+}
+
+[[nodiscard]] double ComputeHydrogenPartitionCoefficient(double temperature_k,
+                                                         double pressure_gpa,
+                                                         double delta_iw_eq,
+                                                         const AlloyComposition& alloy,
+                                                         const Constants& constants) {
+  alloy.Validate();
+  if (temperature_k <= 0.0) {
+    throw std::runtime_error("ComputeHydrogenPartitionCoefficient requires T > 0.");
+  }
+
+  const double log10_dh = constants.dh_intercept +
+                          constants.dh_temperature_coeff / temperature_k +
+                          constants.dh_pressure_coeff * pressure_gpa / temperature_k -
+                          0.5 * delta_iw_eq +
+                          constants.dh_xc_coeff * alloy.x_c;
+  return std::pow(10.0, log10_dh);
+}
+
+[[nodiscard]] double ComputeOxygenMoleFractionInMetal(double temperature_k,
+                                                      double pressure_gpa,
+                                                      double x_feo_silicate,
+                                                      const AlloyComposition& alloy,
+                                                      const Constants& constants) {
+  alloy.Validate();
+  if (temperature_k <= 0.0) {
+    throw std::runtime_error("ComputeOxygenMoleFractionInMetal requires T > 0.");
+  }
+  if (x_feo_silicate < 0.0) {
+    throw std::runtime_error("ComputeOxygenMoleFractionInMetal requires X_FeO >= 0.");
+  }
+
+  const double x_fe = alloy.x_fe();
+  const double ln_k = constants.oxygen_lnK_temperature_coeff / temperature_k +
+                      constants.oxygen_lnK_intercept +
+                      constants.oxygen_lnK_pressure_coeff * pressure_gpa / temperature_k;
+  const double equilibrium_constant = std::exp(ln_k);
+  return equilibrium_constant * x_feo_silicate / std::max(x_fe, 1.0e-12);
+}
+
+[[nodiscard]] double ComputeCarbonPartitionCoefficient(double temperature_k,
+                                                       double pressure_gpa,
+                                                       double delta_iw_eq,
+                                                       double x_s_metal,
+                                                       double x_o_metal,
+                                                       const Constants& constants) {
+  if (temperature_k <= 0.0) {
+    throw std::runtime_error("ComputeCarbonPartitionCoefficient requires T > 0.");
+  }
+  if (x_s_metal < 0.0 || x_o_metal < 0.0) {
+    throw std::runtime_error("ComputeCarbonPartitionCoefficient requires non-negative X_S and X_O.");
+  }
+
+  const double log10_dc = constants.dc_intercept +
+                          constants.dc_temperature_coeff / temperature_k +
+                          constants.dc_pressure_coeff * pressure_gpa / temperature_k +
+                          constants.dc_xs_coeff * x_s_metal +
+                          constants.dc_xo_coeff * x_o_metal +
+                          constants.dc_nbo_coeff * constants.fixed_nbo_over_t +
+                          constants.dc_delta_iw_coeff * delta_iw_eq;
+  return std::pow(10.0, log10_dc);
+}
+
+[[nodiscard]] AlloyComposition UpdatePrecomputeAlloyFromCoreCarbonPpm(
+    double core_carbon_ppm, const AlloyComposition& reference_alloy) {
+  reference_alloy.Validate();
+  if (core_carbon_ppm < 0.0) {
+    throw std::runtime_error("UpdatePrecomputeAlloyFromCoreCarbonPpm requires non-negative C ppm.");
+  }
+
+  constexpr double kAtomicMassCarbon = 12.011;
+  constexpr double kAtomicMassSulfur = 32.06;
+  constexpr double kAtomicMassNickel = 58.6934;
+  constexpr double kAtomicMassSilicon = 28.085;
+  constexpr double kAtomicMassIron = 55.845;
+
+  const double fixed_minor_sum =
+      reference_alloy.x_s + reference_alloy.x_ni + reference_alloy.x_si;
+  const double max_x_c = std::max(0.0, 1.0 - fixed_minor_sum - 1.0e-12);
+  const double carbon_mass_fraction = std::clamp(PpmToMassFraction(core_carbon_ppm), 0.0, 0.20);
+
+  const double non_carbon_molar_mass =
+      reference_alloy.x_s * kAtomicMassSulfur +
+      reference_alloy.x_ni * kAtomicMassNickel +
+      reference_alloy.x_si * kAtomicMassSilicon +
+      (1.0 - fixed_minor_sum) * kAtomicMassIron;
+  const double denominator =
+      kAtomicMassCarbon - carbon_mass_fraction * (kAtomicMassCarbon - kAtomicMassIron);
+  if (!(denominator > 0.0)) {
+    throw std::runtime_error("Carbon mole-fraction denominator became non-positive.");
+  }
+
+  AlloyComposition updated = reference_alloy;
+  updated.x_c = std::clamp(carbon_mass_fraction * non_carbon_molar_mass / denominator,
+                           0.0, max_x_c);
+  updated.Validate();
+  return updated;
 }
 
 [[nodiscard]] double RadiusFromMassKg(double mass_kg, const Constants& constants) {
@@ -739,6 +914,7 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
       }
       resolved.metal_volatiles_ppm = precompute_snapshot->metal_volatiles_ppm;
       resolved.delta15n_metal_permil = precompute_snapshot->delta15n_metal_permil;
+      resolved.alloy = precompute_snapshot->alloy;
       break;
     case InventorySource::kPrecomputeOutputAt0p10EarthMass:
       throw std::runtime_error(
@@ -750,13 +926,15 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
 }
 
 [[nodiscard]] DifferentiatedImpactorSnapshot CaptureDifferentiatedImpactorSnapshot(
-    const PlanetState& planet) {
+    const PlanetState& planet, const AlloyComposition& alloy) {
   planet.Validate();
+  alloy.Validate();
   return {
       planet.mantle.volatiles_ppm,
       planet.core.volatiles_ppm,
       planet.mantle.delta15n_permil,
       planet.core.delta15n_permil,
+      alloy,
   };
 }
 
@@ -817,13 +995,23 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
   StepResult result{};
   result.index = index;
   result.resolved_impactor = resolved_impactor;
-  result.dn_metal_silicate = constants.placeholder_dn_metal_silicate;
-  result.dh_metal_silicate = constants.placeholder_dh_metal_silicate;
-  result.dc_metal_silicate = constants.placeholder_dc_metal_silicate;
   result.erosion_fraction =
       PlaceholderErosionFraction(resolved_impactor.phase, constants);
   result.melt_pool =
       ComputeMeltPoolState(planet_before, resolved_impactor, constants);
+  result.dn_metal_silicate = ComputeNitrogenPartitionCoefficient(
+      result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
+      planet_before.redox.delta_iw_eq, resolved_impactor.alloy, constants);
+  result.dh_metal_silicate = ComputeHydrogenPartitionCoefficient(
+      result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
+      planet_before.redox.delta_iw_eq, resolved_impactor.alloy, constants);
+  result.xo_metal = ComputeOxygenMoleFractionInMetal(
+      result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
+      planet_before.redox.x_feo_silicate, resolved_impactor.alloy, constants);
+  result.dc_metal_silicate = ComputeCarbonPartitionCoefficient(
+      result.melt_pool.temperature_k, result.melt_pool.pressure_gpa,
+      planet_before.redox.delta_iw_eq, resolved_impactor.alloy.x_s, result.xo_metal,
+      constants);
 
   const double target_unmelted_mantle_mass_kg =
       planet_before.mantle.mass_kg - result.melt_pool.target_melt_mass_kg;
@@ -938,10 +1126,12 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
     result.delta15n_silicate_permil =
         delta15n_bulk_permil -
         (metal_after_equilibrium_kg.nitrogen_kg / total_n_before_equilibrium_kg) *
-            constants.placeholder_delta15n_metal_silicate_permil;
+            ComputeNitrogenIsotopeFractionationPermil(
+                result.melt_pool.temperature_k, planet_before.redox.delta_iw_eq, constants);
     result.delta15n_metal_permil =
         result.delta15n_silicate_permil +
-        constants.placeholder_delta15n_metal_silicate_permil;
+        ComputeNitrogenIsotopeFractionationPermil(
+            result.melt_pool.temperature_k, planet_before.redox.delta_iw_eq, constants);
   }
 
   PlanetState planet_after = planet_before;
@@ -1015,10 +1205,14 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
   SimplifiedRunResult run{};
   PlanetState current_planet = initial_planet;
   std::optional<DifferentiatedImpactorSnapshot> precompute_snapshot;
+  AlloyComposition current_precompute_alloy = constants.representative_ec_alloy;
 
   for (std::size_t index = 0; index < scenario.size(); ++index) {
-    const Impactor resolved_impactor =
+    Impactor resolved_impactor =
         ResolveImpactorForStep(scenario.at(index), precompute_snapshot);
+    if (resolved_impactor.phase == GrowthPhase::kPrecomputeAccretion) {
+      resolved_impactor.alloy = current_precompute_alloy;
+    }
     const StepResult step_result =
         RunOneImpactStep(index, current_planet, resolved_impactor, constants);
 
@@ -1033,12 +1227,18 @@ void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
         run.max_abs_conservation_error_kg, step_result.conservation_error_kg);
     current_planet = step_result.planet_after;
 
+    if (scenario.at(index).phase == GrowthPhase::kPrecomputeAccretion) {
+      current_precompute_alloy = UpdatePrecomputeAlloyFromCoreCarbonPpm(
+          current_planet.core.volatiles_ppm.carbon_ppm, current_precompute_alloy);
+    }
+
     const bool is_last_precompute_step =
         scenario.at(index).phase == GrowthPhase::kPrecomputeAccretion &&
         (index + 1 == scenario.size() ||
          scenario.at(index + 1).phase != GrowthPhase::kPrecomputeAccretion);
     if (is_last_precompute_step) {
-      precompute_snapshot = CaptureDifferentiatedImpactorSnapshot(current_planet);
+      precompute_snapshot =
+          CaptureDifferentiatedImpactorSnapshot(current_planet, current_precompute_alloy);
       run.has_precompute_snapshot = true;
       run.precompute_snapshot = *precompute_snapshot;
     }
