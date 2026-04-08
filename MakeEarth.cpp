@@ -47,6 +47,11 @@ enum class InventorySource {
   kPrecomputeCoreAt0p10EarthMass,
 };
 
+enum class ErosionSizeDistribution {
+  kDMinus2,
+  kDMinus3,
+};
+
 struct ElementPpm {
   double carbon_ppm = 0.0;
   double hydrogen_ppm = 0.0;
@@ -248,6 +253,17 @@ struct ElementPartitionKg {
   double metal_kg = 0.0;
 };
 
+struct ErosionEfficiencies {
+  double direct_atmosphere_efficiency = 0.0;
+  double impactor_vapor_escape_efficiency = 0.0;
+};
+
+struct AtmosphericErosionOutcome {
+  double erosion_fraction = 0.0;
+  double impactor_vapor_escape_efficiency = 0.0;
+  ElementMassKg eroded_elements_kg{};
+};
+
 struct Constants {
   double earth_mass_kg = 5.9722e24;
   double earth_radius_m = 6.371e6;
@@ -305,9 +321,12 @@ struct Constants {
   double placeholder_atmosphere_fraction_carbon = 0.10;
   double placeholder_atmosphere_fraction_hydrogen = 0.25;
   double placeholder_atmosphere_fraction_nitrogen = 0.10;
-  double placeholder_erosion_fraction_precompute = 1.0e-4;
-  double placeholder_erosion_fraction_giant_impact = 0.05;
-  double placeholder_erosion_fraction_late_veneer = 0.01;
+  double erosion_magma_ocean_temperature_k = 1500.0;
+  double erosion_late_veneer_temperature_k = 288.0;
+  double erosion_target_surface_density_kg_m3 = 2630.0;
+  double erosion_impactor_density_kg_m3 = 3320.0;
+  double erosion_integration_rel_tolerance = 1.0e-2;
+  int erosion_integration_max_refinements = 10;
 
   double initial_planet_mass_earth = 0.01;
   double precompute_end_mass_earth = 0.10;
@@ -1340,17 +1359,466 @@ void ApplyAtmosphereSpeciationFromDeltaIw(AtmosphereState* atmosphere,
   }
 }
 
-[[nodiscard]] double PlaceholderErosionFraction(GrowthPhase phase,
-                                                const Constants& constants) {
-  switch (phase) {
-    case GrowthPhase::kPrecomputeAccretion:
-      return constants.placeholder_erosion_fraction_precompute;
-    case GrowthPhase::kGiantImpact:
-      return constants.placeholder_erosion_fraction_giant_impact;
-    case GrowthPhase::kLateVeneer:
-      return constants.placeholder_erosion_fraction_late_veneer;
+[[nodiscard]] ErosionEfficiencies AddErosionEfficiencies(
+    const ErosionEfficiencies& left, const ErosionEfficiencies& right) {
+  return {
+      left.direct_atmosphere_efficiency + right.direct_atmosphere_efficiency,
+      left.impactor_vapor_escape_efficiency + right.impactor_vapor_escape_efficiency,
+  };
+}
+
+[[nodiscard]] ErosionEfficiencies ScaleErosionEfficiencies(
+    const ErosionEfficiencies& efficiencies, double factor) {
+  return {
+      efficiencies.direct_atmosphere_efficiency * factor,
+      efficiencies.impactor_vapor_escape_efficiency * factor,
+  };
+}
+
+template <typename Func>
+[[nodiscard]] double SimpsonIntegrateScalar(double x_min, double x_max,
+                                            double relative_tolerance,
+                                            int max_refinements, Func&& func) {
+  if (x_max <= x_min) {
+    return 0.0;
   }
-  throw std::runtime_error("Unknown GrowthPhase in PlaceholderErosionFraction.");
+
+  int interval_count = 2;
+  auto integrate = [&](int num_intervals) {
+    const double dx = (x_max - x_min) / static_cast<double>(num_intervals);
+    double weighted_sum = func(x_min) + func(x_max);
+    for (int index = 1; index < num_intervals; ++index) {
+      const double x = x_min + dx * static_cast<double>(index);
+      weighted_sum += (index % 2 == 0 ? 2.0 : 4.0) * func(x);
+    }
+    return weighted_sum * dx / 3.0;
+  };
+
+  double previous_value = integrate(interval_count);
+  for (int refinement = 0; refinement < max_refinements; ++refinement) {
+    interval_count *= 2;
+    const double current_value = integrate(interval_count);
+    const double scale = std::max(std::fabs(previous_value), 1.0e-30);
+    if (std::fabs(current_value - previous_value) / scale < relative_tolerance) {
+      return current_value;
+    }
+    previous_value = current_value;
+  }
+  return previous_value;
+}
+
+template <typename Func>
+[[nodiscard]] ErosionEfficiencies SimpsonIntegrateEfficiencies(
+    double x_min, double x_max, double relative_tolerance,
+    int max_refinements, Func&& func) {
+  if (x_max <= x_min) {
+    return {};
+  }
+
+  int interval_count = 2;
+  auto integrate = [&](int num_intervals) {
+    const double dx = (x_max - x_min) / static_cast<double>(num_intervals);
+    ErosionEfficiencies weighted_sum =
+        AddErosionEfficiencies(func(x_min), func(x_max));
+    for (int index = 1; index < num_intervals; ++index) {
+      const double x = x_min + dx * static_cast<double>(index);
+      const double weight = index % 2 == 0 ? 2.0 : 4.0;
+      weighted_sum = AddErosionEfficiencies(
+          weighted_sum, ScaleErosionEfficiencies(func(x), weight));
+    }
+    return ScaleErosionEfficiencies(weighted_sum, dx / 3.0);
+  };
+
+  ErosionEfficiencies previous_value = integrate(interval_count);
+  for (int refinement = 0; refinement < max_refinements; ++refinement) {
+    interval_count *= 2;
+    const ErosionEfficiencies current_value = integrate(interval_count);
+    const double direct_scale =
+        std::max(std::fabs(previous_value.direct_atmosphere_efficiency), 1.0e-30);
+    const double vapor_scale =
+        std::max(std::fabs(previous_value.impactor_vapor_escape_efficiency), 1.0e-30);
+    const double direct_change =
+        std::fabs(current_value.direct_atmosphere_efficiency -
+                  previous_value.direct_atmosphere_efficiency) /
+        direct_scale;
+    const double vapor_change =
+        std::fabs(current_value.impactor_vapor_escape_efficiency -
+                  previous_value.impactor_vapor_escape_efficiency) /
+        vapor_scale;
+    if (direct_change < relative_tolerance && vapor_change < relative_tolerance) {
+      return current_value;
+    }
+    previous_value = current_value;
+  }
+  return previous_value;
+}
+
+[[nodiscard]] double CarbonSpeciesMolarMassKgPerMol(CarbonGasSpecies species) {
+  switch (species) {
+    case CarbonGasSpecies::kCO2:
+      return 44.0095e-3;
+    case CarbonGasSpecies::kCO:
+      return 28.0101e-3;
+    case CarbonGasSpecies::kCH4:
+      return 16.0425e-3;
+  }
+  throw std::runtime_error("Unknown carbon gas species.");
+}
+
+[[nodiscard]] double HydrogenSpeciesMolarMassKgPerMol(HydrogenGasSpecies species) {
+  switch (species) {
+    case HydrogenGasSpecies::kH2O:
+      return 18.01528e-3;
+    case HydrogenGasSpecies::kH2:
+      return 2.01588e-3;
+  }
+  throw std::runtime_error("Unknown hydrogen gas species.");
+}
+
+[[nodiscard]] double NitrogenSpeciesMolarMassKgPerMol(NitrogenGasSpecies species) {
+  switch (species) {
+    case NitrogenGasSpecies::kN2:
+      return 28.0134e-3;
+  }
+  throw std::runtime_error("Unknown nitrogen gas species.");
+}
+
+[[nodiscard]] double ComputeAtmosphereTotalMolecularMassKg(
+    const AtmosphereState& atmosphere) {
+  return atmosphere.elements_kg.carbon_kg *
+             (CarbonSpeciesMolarMassKgPerMol(atmosphere.carbon_species) /
+              12.011e-3) +
+         atmosphere.elements_kg.hydrogen_kg *
+             (HydrogenSpeciesMolarMassKgPerMol(atmosphere.hydrogen_species) /
+              (2.0 * 1.00794e-3)) +
+         atmosphere.elements_kg.nitrogen_kg *
+             (NitrogenSpeciesMolarMassKgPerMol(atmosphere.nitrogen_species) /
+              28.0134e-3);
+}
+
+[[nodiscard]] double ComputeAtmosphereTotalMoles(const AtmosphereState& atmosphere) {
+  return atmosphere.elements_kg.carbon_kg / 12.011e-3 +
+         atmosphere.elements_kg.hydrogen_kg / (2.0 * 1.00794e-3) +
+         atmosphere.elements_kg.nitrogen_kg / 28.0134e-3;
+}
+
+[[nodiscard]] double ComputeAtmosphereMeanMolecularMolarMassKgPerMol(
+    const AtmosphereState& atmosphere) {
+  const double total_moles = ComputeAtmosphereTotalMoles(atmosphere);
+  if (!(total_moles > 0.0)) {
+    return 0.0;
+  }
+  return ComputeAtmosphereTotalMolecularMassKg(atmosphere) / total_moles;
+}
+
+[[nodiscard]] ElementMassKg ComputeImpactorBulkElementMassKg(
+    const Impactor& impactor) {
+  impactor.Validate();
+  const double impactor_silicate_mass_kg =
+      (1.0 - impactor.metallic_fe_fraction) * impactor.mass_kg;
+  const double impactor_metal_mass_kg =
+      impactor.metallic_fe_fraction * impactor.mass_kg;
+  return AddElementMassKg(
+      PpmToElementMassKg(impactor.silicate_volatiles_ppm, impactor_silicate_mass_kg),
+      PpmToElementMassKg(impactor.metal_volatiles_ppm, impactor_metal_mass_kg));
+}
+
+[[nodiscard]] ElementMassKg ComputeImpactorBulkElementMassFractions(
+    const Impactor& impactor) {
+  const ElementMassKg impactor_bulk_elements_kg =
+      ComputeImpactorBulkElementMassKg(impactor);
+  return {
+      impactor_bulk_elements_kg.carbon_kg / impactor.mass_kg,
+      impactor_bulk_elements_kg.hydrogen_kg / impactor.mass_kg,
+      impactor_bulk_elements_kg.nitrogen_kg / impactor.mass_kg,
+  };
+}
+
+[[nodiscard]] double ComputeMassDistributionWeight(
+    double log10_diameter_cm, ErosionSizeDistribution distribution) {
+  constexpr double kLog10DiameterMinCm = 3.5;
+  constexpr double kLog10DiameterMaxCm = 8.0;
+  static const double dminus2_normalization =
+      (std::pow(10.0, 2.0 * kLog10DiameterMaxCm) -
+       std::pow(10.0, 2.0 * kLog10DiameterMinCm)) /
+      (2.0 * kLog10Factor);
+  static const double dminus3_normalization =
+      (std::pow(10.0, kLog10DiameterMaxCm) -
+       std::pow(10.0, kLog10DiameterMinCm)) /
+      kLog10Factor;
+
+  switch (distribution) {
+    case ErosionSizeDistribution::kDMinus2:
+      return std::pow(10.0, 2.0 * log10_diameter_cm) / dminus2_normalization;
+    case ErosionSizeDistribution::kDMinus3:
+      return std::pow(10.0, log10_diameter_cm) / dminus3_normalization;
+  }
+  throw std::runtime_error("Unknown erosion size distribution.");
+}
+
+[[nodiscard]] double ComputeVelocityDistributionWeight(double velocity_factor) {
+  constexpr double kVelocityFactorMin = 1.0;
+  constexpr double kVelocityFactorMax = 4.324;
+  static const double normalization = SimpsonIntegrateScalar(
+      kVelocityFactorMin, kVelocityFactorMax, 1.0e-10, 14,
+      [](double factor) {
+        const double excess_velocity = factor * factor - 1.0;
+        return excess_velocity <= 0.0
+                   ? 0.0
+                   : std::sqrt(excess_velocity) * std::exp(-0.5 * excess_velocity);
+      });
+
+  if (velocity_factor < kVelocityFactorMin || velocity_factor > kVelocityFactorMax) {
+    return 0.0;
+  }
+  const double excess_velocity = velocity_factor * velocity_factor - 1.0;
+  return excess_velocity <= 0.0
+             ? 0.0
+             : std::sqrt(excess_velocity) * std::exp(-0.5 * excess_velocity) /
+                   normalization;
+}
+
+[[nodiscard]] ErosionEfficiencies ComputeSingleImpactErosionEfficiencies(
+    double impactor_diameter_m, double impact_velocity_m_s,
+    double escape_velocity_m_s, double atmospheric_scale_height_m,
+    double atmospheric_density_kg_m3, const Constants& constants) {
+  if (impactor_diameter_m <= 0.0 || impact_velocity_m_s <= 0.0 ||
+      escape_velocity_m_s <= 0.0 || atmospheric_scale_height_m <= 0.0 ||
+      atmospheric_density_kg_m3 <= 0.0) {
+    return {};
+  }
+
+  const double diameter_term =
+      std::pow(impactor_diameter_m / atmospheric_scale_height_m, 3.0);
+  const double density_term =
+      constants.erosion_impactor_density_kg_m3 *
+      constants.erosion_target_surface_density_kg_m3 /
+      (atmospheric_density_kg_m3 *
+       (constants.erosion_target_surface_density_kg_m3 +
+        constants.erosion_impactor_density_kg_m3));
+  const double velocity_term =
+      std::pow(impact_velocity_m_s / escape_velocity_m_s, 2.0) - 1.0;
+  const double u_term =
+      constants.erosion_target_surface_density_kg_m3 /
+      constants.erosion_impactor_density_kg_m3 *
+      impact_velocity_m_s / escape_velocity_m_s;
+  const double impactor_vapor_candidate_2 = 0.07 * u_term;
+  const double full_integral = 256.0 / 693.0;
+  const double alpha_factor = 5.0 + Pi() - 4.0 / 3.0;
+
+  double direct_efficiency = 0.0;
+  if (velocity_term >= 0.0) {
+    const double attenuation = atmospheric_density_kg_m3 /
+                               constants.erosion_impactor_density_kg_m3 *
+                               ((atmospheric_scale_height_m / impactor_diameter_m) +
+                                (2.0 * atmospheric_scale_height_m * atmospheric_scale_height_m *
+                                 std::sqrt(atmospheric_density_kg_m3 /
+                                           constants.erosion_impactor_density_kg_m3)) /
+                                    (0.75 * impactor_diameter_m * impactor_diameter_m) +
+                                (std::pow(atmospheric_scale_height_m, 3.0) *
+                                 atmospheric_density_kg_m3) /
+                                    ((std::pow(impactor_diameter_m, 3.0) / 8.0) *
+                                     constants.erosion_impactor_density_kg_m3));
+    const double surface_impact_velocity_m_s =
+        impact_velocity_m_s * std::exp(-attenuation);
+    const double plume_velocity_m_s = std::sqrt(26.0) * surface_impact_velocity_m_s;
+    if (plume_velocity_m_s >= escape_velocity_m_s) {
+      const double velocity_ratio = escape_velocity_m_s / plume_velocity_m_s;
+      const double plume_integral =
+          -std::pow(velocity_ratio, 11.0) / 11.0 +
+          5.0 * std::pow(velocity_ratio, 9.0) / 9.0 -
+          10.0 * std::pow(velocity_ratio, 7.0) / 7.0 +
+          2.0 * std::pow(velocity_ratio, 5.0) -
+          5.0 * std::pow(velocity_ratio, 3.0) / 3.0 + velocity_ratio;
+      const double integral_fraction = (full_integral - plume_integral) / full_integral;
+      direct_efficiency =
+          0.75 * atmospheric_density_kg_m3 /
+          constants.erosion_impactor_density_kg_m3 *
+          (2.0 * atmospheric_scale_height_m / impactor_diameter_m +
+           16.0 * atmospheric_scale_height_m * atmospheric_scale_height_m *
+               std::sqrt(atmospheric_density_kg_m3 /
+                         constants.erosion_impactor_density_kg_m3) /
+               (3.0 * impactor_diameter_m * impactor_diameter_m) +
+           16.0 * std::pow(atmospheric_scale_height_m, 3.0) *
+               atmospheric_density_kg_m3 /
+               (std::pow(impactor_diameter_m, 3.0) *
+                constants.erosion_impactor_density_kg_m3)) *
+          integral_fraction * alpha_factor;
+    }
+  }
+  direct_efficiency = std::max(0.0, direct_efficiency);
+
+  double impactor_vapor_efficiency = 0.0;
+  if (velocity_term > 0.0) {
+    const double x_parameter = diameter_term * density_term * velocity_term;
+    if (x_parameter > 0.0) {
+      const double impactor_vapor_candidate_1 =
+          0.035 * u_term * (std::log10(x_parameter) - 1.0);
+      impactor_vapor_efficiency =
+          std::clamp(std::min(impactor_vapor_candidate_1,
+                              impactor_vapor_candidate_2),
+                     0.0, 1.0);
+    }
+  }
+
+  return {direct_efficiency, impactor_vapor_efficiency};
+}
+
+[[nodiscard]] ErosionEfficiencies ComputeDiameterAveragedErosionEfficiencies(
+    double impact_velocity_m_s, double escape_velocity_m_s,
+    double atmospheric_scale_height_m, double atmospheric_density_kg_m3,
+    ErosionSizeDistribution distribution, const Constants& constants) {
+  constexpr double kLog10DiameterMinCm = 3.5;
+  constexpr double kLog10DiameterSplitCm = 3.6874278;
+  constexpr double kLog10DiameterMaxCm = 8.0;
+
+  auto integrate_range = [&](double lower, double upper) {
+    return SimpsonIntegrateEfficiencies(
+        lower, upper, constants.erosion_integration_rel_tolerance,
+        constants.erosion_integration_max_refinements,
+        [&](double log10_diameter_cm) {
+          const double impactor_diameter_m = std::pow(10.0, log10_diameter_cm - 2.0);
+          return ScaleErosionEfficiencies(
+              ComputeSingleImpactErosionEfficiencies(
+                  impactor_diameter_m, impact_velocity_m_s, escape_velocity_m_s,
+                  atmospheric_scale_height_m, atmospheric_density_kg_m3,
+                  constants),
+              ComputeMassDistributionWeight(log10_diameter_cm, distribution));
+        });
+  };
+
+  return AddErosionEfficiencies(
+      integrate_range(kLog10DiameterMinCm, kLog10DiameterSplitCm),
+      integrate_range(kLog10DiameterSplitCm, kLog10DiameterMaxCm));
+}
+
+[[nodiscard]] ErosionEfficiencies ComputeAverageAtmosphericErosionEfficiencies(
+    double escape_velocity_m_s, double atmospheric_scale_height_m,
+    double atmospheric_density_kg_m3, ErosionSizeDistribution distribution,
+    const Constants& constants) {
+  constexpr double kVelocityFactorMin = 1.0;
+  constexpr double kVelocityFactorMax = 4.324;
+  if (escape_velocity_m_s <= 0.0 || atmospheric_scale_height_m <= 0.0 ||
+      atmospheric_density_kg_m3 <= 0.0) {
+    return {};
+  }
+
+  return SimpsonIntegrateEfficiencies(
+      kVelocityFactorMin, kVelocityFactorMax,
+      constants.erosion_integration_rel_tolerance,
+      constants.erosion_integration_max_refinements,
+      [&](double velocity_factor) {
+        return ScaleErosionEfficiencies(
+            ComputeDiameterAveragedErosionEfficiencies(
+                velocity_factor * escape_velocity_m_s, escape_velocity_m_s,
+                atmospheric_scale_height_m, atmospheric_density_kg_m3,
+                distribution, constants),
+            ComputeVelocityDistributionWeight(velocity_factor));
+      });
+}
+
+[[nodiscard]] AtmosphericErosionOutcome ComputeAccretionPhaseAtmosphericErosion(
+    const PlanetState& planet_before, const AtmosphereState& atmosphere_before_erosion,
+    const Impactor& impactor, GrowthPhase phase, const Constants& constants) {
+  planet_before.Validate();
+  impactor.Validate();
+  AtmosphericErosionOutcome outcome{};
+
+  const double total_molecular_mass_kg =
+      ComputeAtmosphereTotalMolecularMassKg(atmosphere_before_erosion);
+  const double mean_molecular_mass_kg_per_mol =
+      ComputeAtmosphereMeanMolecularMolarMassKgPerMol(atmosphere_before_erosion);
+  if (!(total_molecular_mass_kg > 0.0) ||
+      !(mean_molecular_mass_kg_per_mol > 0.0)) {
+    return outcome;
+  }
+
+  const double planet_radius_m =
+      RadiusFromMassKg(planet_before.total_mass_kg(), constants);
+  const double surface_gravity_m_s2 =
+      Gravity(planet_before.total_mass_kg(), planet_radius_m, constants);
+  const double escape_velocity_m_s =
+      EscapeVelocity(planet_before.total_mass_kg(), planet_radius_m, constants);
+  const double atmosphere_temperature_k =
+      phase == GrowthPhase::kLateVeneer
+          ? constants.erosion_late_veneer_temperature_k
+          : constants.erosion_magma_ocean_temperature_k;
+  const double atmospheric_scale_height_m =
+      kUniversalGasConstantJPerMolK * atmosphere_temperature_k /
+      (mean_molecular_mass_kg_per_mol * surface_gravity_m_s2);
+  const double atmospheric_density_kg_m3 =
+      total_molecular_mass_kg /
+      (4.0 * Pi() * planet_radius_m * planet_radius_m * atmospheric_scale_height_m);
+
+  const ErosionSizeDistribution distribution =
+      phase == GrowthPhase::kLateVeneer ? ErosionSizeDistribution::kDMinus3
+                                        : ErosionSizeDistribution::kDMinus2;
+  const ErosionEfficiencies efficiencies =
+      ComputeAverageAtmosphericErosionEfficiencies(
+          escape_velocity_m_s, atmospheric_scale_height_m,
+          atmospheric_density_kg_m3, distribution, constants);
+  outcome.impactor_vapor_escape_efficiency =
+      efficiencies.impactor_vapor_escape_efficiency;
+
+  const ElementMassKg impactor_bulk_mass_fractions =
+      ComputeImpactorBulkElementMassFractions(impactor);
+  auto compute_loss = [&](double atmospheric_element_mass_kg,
+                          double impactor_bulk_fraction) {
+    const double raw_loss_kg =
+        (efficiencies.impactor_vapor_escape_efficiency * impactor_bulk_fraction +
+         efficiencies.direct_atmosphere_efficiency * atmospheric_element_mass_kg /
+             total_molecular_mass_kg) *
+        impactor.mass_kg;
+    return std::clamp(raw_loss_kg, 0.0, atmospheric_element_mass_kg);
+  };
+
+  outcome.eroded_elements_kg = {
+      compute_loss(atmosphere_before_erosion.elements_kg.carbon_kg,
+                   impactor_bulk_mass_fractions.carbon_kg),
+      compute_loss(atmosphere_before_erosion.elements_kg.hydrogen_kg,
+                   impactor_bulk_mass_fractions.hydrogen_kg),
+      compute_loss(atmosphere_before_erosion.elements_kg.nitrogen_kg,
+                   impactor_bulk_mass_fractions.nitrogen_kg),
+  };
+  const double eroded_total_molecular_mass_kg =
+      outcome.eroded_elements_kg.carbon_kg *
+          (CarbonSpeciesMolarMassKgPerMol(atmosphere_before_erosion.carbon_species) /
+           12.011e-3) +
+      outcome.eroded_elements_kg.hydrogen_kg *
+          (HydrogenSpeciesMolarMassKgPerMol(atmosphere_before_erosion.hydrogen_species) /
+           (2.0 * 1.00794e-3)) +
+      outcome.eroded_elements_kg.nitrogen_kg *
+          (NitrogenSpeciesMolarMassKgPerMol(atmosphere_before_erosion.nitrogen_species) /
+           28.0134e-3);
+  outcome.erosion_fraction = total_molecular_mass_kg > 0.0
+                                 ? eroded_total_molecular_mass_kg /
+                                       total_molecular_mass_kg
+                                 : 0.0;
+  return outcome;
+}
+
+[[nodiscard]] AtmosphericErosionOutcome ComputeGiantImpactAtmosphericErosion(
+    const PlanetState& planet_before, const AtmosphereState& atmosphere_before_erosion,
+    const Impactor& impactor) {
+  planet_before.Validate();
+  impactor.Validate();
+  AtmosphericErosionOutcome outcome{};
+  if (!(planet_before.total_mass_kg() > 0.0)) {
+    return outcome;
+  }
+
+  const double mass_ratio = impactor.mass_kg / planet_before.total_mass_kg();
+  const double erosion_fraction = std::clamp(
+      0.4 * mass_ratio + 1.4 * mass_ratio * mass_ratio -
+          0.8 * mass_ratio * mass_ratio * mass_ratio,
+      0.0, 1.0);
+  outcome.erosion_fraction = erosion_fraction;
+  outcome.eroded_elements_kg = {
+      atmosphere_before_erosion.elements_kg.carbon_kg * erosion_fraction,
+      atmosphere_before_erosion.elements_kg.hydrogen_kg * erosion_fraction,
+      atmosphere_before_erosion.elements_kg.nitrogen_kg * erosion_fraction,
+  };
+  return outcome;
 }
 
 [[nodiscard]] Impactor ResolveImpactorForStep(
@@ -1480,8 +1948,6 @@ void ApplyAtmosphereSpeciationFromDeltaIw(AtmosphereState* atmosphere,
   StepResult result{};
   result.index = index;
   result.resolved_impactor = resolved_impactor;
-  result.erosion_fraction =
-      PlaceholderErosionFraction(resolved_impactor.phase, constants);
   result.melt_pool =
       ComputeMeltPoolState(planet_before, resolved_impactor, constants);
 
@@ -1700,11 +2166,25 @@ void ApplyAtmosphereSpeciationFromDeltaIw(AtmosphereState* atmosphere,
   ApplyAtmosphereSpeciationFromDeltaIw(&planet_after.atmosphere,
                                        planet_after.redox.delta_iw_surface);
 
-  result.eroded_volatiles_kg = {
-      planet_after.atmosphere.elements_kg.carbon_kg * result.erosion_fraction,
-      planet_after.atmosphere.elements_kg.hydrogen_kg * result.erosion_fraction,
-      planet_after.atmosphere.elements_kg.nitrogen_kg * result.erosion_fraction,
-  };
+  AtmosphericErosionOutcome erosion_outcome{};
+  switch (resolved_impactor.phase) {
+    case GrowthPhase::kPrecomputeAccretion:
+      erosion_outcome = ComputeAccretionPhaseAtmosphericErosion(
+          planet_before, planet_after.atmosphere, resolved_impactor,
+          GrowthPhase::kPrecomputeAccretion, constants);
+      break;
+    case GrowthPhase::kGiantImpact:
+      erosion_outcome = ComputeGiantImpactAtmosphericErosion(
+          planet_before, planet_after.atmosphere, resolved_impactor);
+      break;
+    case GrowthPhase::kLateVeneer:
+      erosion_outcome = ComputeAccretionPhaseAtmosphericErosion(
+          planet_before, planet_after.atmosphere, resolved_impactor,
+          GrowthPhase::kLateVeneer, constants);
+      break;
+  }
+  result.erosion_fraction = erosion_outcome.erosion_fraction;
+  result.eroded_volatiles_kg = erosion_outcome.eroded_elements_kg;
   planet_after.atmosphere.elements_kg = SubtractElementMassKg(
       planet_after.atmosphere.elements_kg, result.eroded_volatiles_kg);
 
