@@ -765,9 +765,10 @@ P_i [Pa]      = g × m̄ × N_i / (4πR_planet²)
 
 Sakuraba et al. (2021) Table 1 の `S_i` は，上式のように `(P_i / 1 MPa)` を用いたとき `C_sil,i` を ppm で与える定数である．したがって本モデルでは `C_sil,i` を ppm のまま保持し，保存式の中だけ `w_sil,i = C_sil,i × 10^-6` に変換する．
 
-- C と N は Table 1 の定数 `S_i` をそのまま用いる
+- C は Sakuraba et al. (2021) Table 1 の nominal values `S_C = 1.6, 0.55, 0.22 ppm` をそれぞれ `CO₂, CO, CH₄` に対応させて用いる
+- N は同じく Table 1 の nominal values `S_N = 1.0, 5.0, 50.0 ppm` を oxidized / intermediate / reduced regime に対応させて用いる
 - N 種は現バージョンでは全 redox 条件で `N₂` に固定する．`NH₃`/HCN chemistry は範囲外とする
-- H は Sakuraba.C と同様に，酸化条件で H₂O が主成分のときは Moore (1998) 型溶解度モデルを優先する．`S_i` 表記は atmosphere-silicate solubility relation の総称として用いる
+- H は Sakuraba.C と同様に，酸化条件で H₂O が主成分のときは Moore (1998) 型溶解度モデルを優先する．H 種が `H₂` のときは，Table 1 reduced-model row の published H₂ solubility `S_H = 5.0 (P_i/1 MPa)^(1/2) ppm` を Henry 型 `S_i` として用いる
 
 **H₂O 条件での H 溶解度（Moore 1998；Sakuraba.C 実装準拠）**
 

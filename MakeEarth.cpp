@@ -253,6 +253,17 @@ struct ElementPartitionKg {
   double metal_kg = 0.0;
 };
 
+struct Step2EquilibriumState {
+  ElementPartitionKg carbon{};
+  ElementPartitionKg hydrogen{};
+  ElementPartitionKg nitrogen{};
+  double mean_molar_mass_kg_per_mol = 0.0;
+  double carbon_partial_pressure_pa = 0.0;
+  double hydrogen_partial_pressure_pa = 0.0;
+  double nitrogen_partial_pressure_pa = 0.0;
+  int outer_iteration_count = 0;
+};
+
 struct ErosionEfficiencies {
   double direct_atmosphere_efficiency = 0.0;
   double impactor_vapor_escape_efficiency = 0.0;
@@ -285,9 +296,32 @@ struct Constants {
   double geotherm_gradient_k_m = 1.0e-4;
   double melt_pool_convergence_tolerance_m = 1.0;
   int melt_pool_max_iterations = 100;
-  double placeholder_delta_iw_surface = -2.0;
 
   double fixed_nbo_over_t = 2.5;
+
+  double step2_outer_rel_tolerance = 1.0e-4;
+  int step2_outer_max_iterations = 32;
+  double step2_root_rel_tolerance = 1.0e-10;
+  int step2_root_max_iterations = 128;
+
+  double carbon_solubility_oxidized_ppm = 1.6;
+  double nitrogen_solubility_oxidized_ppm = 1.0;
+  double carbon_solubility_intermediate_ppm = 0.55;
+  double nitrogen_solubility_intermediate_ppm = 5.0;
+  double carbon_solubility_reduced_ppm = 0.22;
+  double nitrogen_solubility_reduced_ppm = 50.0;
+  double hydrogen_h2_solubility_ppm_sqrt_mpa = 5.0;
+
+  double moore_a = 2565.0;
+  double moore_b_al = -1.997;
+  double moore_b_fe = -0.9275;
+  double moore_b_na = 2.736;
+  double moore_x_al = 0.137;
+  double moore_x_fe = 0.124;
+  double moore_x_na = 0.0268;
+  double moore_c = 1.171;
+  double moore_d = -14.21;
+  double moore_r_c_to_x = 0.309;
 
   double dn_intercept = -0.38;
   double dn_temperature_coeff = 3370.0;
@@ -318,9 +352,6 @@ struct Constants {
   double dc_xo_coeff = -19.5;
   double dc_nbo_coeff = -0.118;
   double dc_delta_iw_coeff = -0.238;
-  double placeholder_atmosphere_fraction_carbon = 0.10;
-  double placeholder_atmosphere_fraction_hydrogen = 0.25;
-  double placeholder_atmosphere_fraction_nitrogen = 0.10;
   double erosion_magma_ocean_temperature_k = 1500.0;
   double erosion_late_veneer_temperature_k = 288.0;
   double erosion_target_surface_density_kg_m3 = 2630.0;
@@ -697,6 +728,10 @@ constexpr double kMolarMassNaO0p5KgPerMol = 30.98976928e-3;
 constexpr double kMolarMassKO0p5KgPerMol = 47.0978e-3;
 constexpr double kMolarMassPO2p5KgPerMol = 70.971761998e-3;
 constexpr double kMolarMassFeKgPerMol = 55.845e-3;
+constexpr double kMolarMassCarbonElementKgPerMol = 12.011e-3;
+constexpr double kMolarMassHydrogenElementKgPerMol = 2.0 * 1.00794e-3;
+constexpr double kMolarMassNitrogenElementKgPerMol = 28.0134e-3;
+constexpr double kMolarMassH2OKgPerMol = 18.01528e-3;
 constexpr double kAngstrom3ToCm3PerMol = 0.602214076;
 constexpr double kSurfaceAdiabaticGradientKPerGpa = 15.0;
 constexpr int kPressureIntegralSteps = 48;
@@ -1891,52 +1926,368 @@ template <typename Func>
   };
 }
 
-[[nodiscard]] ElementPartitionKg PartitionElementMass(double total_element_kg,
-                                                      double silicate_mass_kg,
-                                                      double metal_mass_kg,
-                                                      double partition_coefficient,
-                                                      double atmosphere_fraction) {
-  if (total_element_kg < 0.0) {
-    throw std::runtime_error("PartitionElementMass requires non-negative total mass.");
+template <typename Func>
+[[nodiscard]] double SolveBisection(double lower_bound, double upper_bound,
+                                    double relative_tolerance,
+                                    int max_iterations, Func&& residual,
+                                    const char* label) {
+  if (!(upper_bound >= lower_bound)) {
+    throw std::runtime_error(std::string(label) + " requires upper_bound >= lower_bound.");
   }
-  if (silicate_mass_kg < 0.0 || metal_mass_kg < 0.0) {
-    throw std::runtime_error("PartitionElementMass requires non-negative host masses.");
-  }
-  if (partition_coefficient < 0.0) {
-    throw std::runtime_error("PartitionElementMass requires non-negative partition coefficient.");
+  if (upper_bound == lower_bound) {
+    return lower_bound;
   }
 
-  const double clamped_atmosphere_fraction =
-      std::clamp(atmosphere_fraction, 0.0, 1.0);
-  ElementPartitionKg partition{};
-  partition.atmosphere_kg = total_element_kg * clamped_atmosphere_fraction;
-
-  const double retained_non_atmosphere_kg =
-      total_element_kg - partition.atmosphere_kg;
-  if (retained_non_atmosphere_kg <= 0.0) {
-    return partition;
+  double lower = lower_bound;
+  double upper = upper_bound;
+  double f_lower = residual(lower);
+  double f_upper = residual(upper);
+  if (!std::isfinite(f_lower) || !std::isfinite(f_upper)) {
+    throw std::runtime_error(std::string(label) + " residual is not finite at the bracket endpoints.");
+  }
+  if (f_lower == 0.0) {
+    return lower;
+  }
+  if (f_upper == 0.0) {
+    return upper;
+  }
+  if (f_lower * f_upper > 0.0) {
+    throw std::runtime_error(std::string(label) + " root is not bracketed.");
   }
 
-  if (silicate_mass_kg <= 0.0 && metal_mass_kg <= 0.0) {
-    partition.atmosphere_kg = total_element_kg;
-    return partition;
+  const double scale = std::max(std::fabs(upper_bound), 1.0);
+  for (int iteration = 0; iteration < max_iterations; ++iteration) {
+    const double midpoint = 0.5 * (lower + upper);
+    const double f_midpoint = residual(midpoint);
+    if (!std::isfinite(f_midpoint)) {
+      throw std::runtime_error(std::string(label) + " residual became non-finite during bisection.");
+    }
+
+    if (f_lower * f_midpoint <= 0.0) {
+      upper = midpoint;
+      f_upper = f_midpoint;
+    } else {
+      lower = midpoint;
+      f_lower = f_midpoint;
+    }
+
+    if (std::fabs(upper - lower) / scale < relative_tolerance) {
+      return 0.5 * (lower + upper);
+    }
   }
-  if (metal_mass_kg <= 0.0) {
-    partition.silicate_kg = retained_non_atmosphere_kg;
-    return partition;
+
+  throw std::runtime_error(std::string(label) + " bisection did not converge.");
+}
+
+[[nodiscard]] double ComputeAtmosphericPartialPressurePa(
+    double atmospheric_element_mass_kg, double element_molar_mass_kg_per_mol,
+    double mean_molar_mass_kg_per_mol, double surface_gravity_m_s2,
+    double planet_radius_m) {
+  if (atmospheric_element_mass_kg <= 0.0 || element_molar_mass_kg_per_mol <= 0.0 ||
+      mean_molar_mass_kg_per_mol <= 0.0 || surface_gravity_m_s2 <= 0.0 ||
+      planet_radius_m <= 0.0) {
+    return 0.0;
+  }
+
+  const double molecule_moles =
+      atmospheric_element_mass_kg / element_molar_mass_kg_per_mol;
+  return surface_gravity_m_s2 * mean_molar_mass_kg_per_mol * molecule_moles /
+         (4.0 * Pi() * planet_radius_m * planet_radius_m);
+}
+
+[[nodiscard]] double ComputeHenrySilicateConcentrationPpm(double partial_pressure_pa,
+                                                          double solubility_ppm,
+                                                          double stoichiometric_x) {
+  if (partial_pressure_pa <= 0.0) {
+    return 0.0;
+  }
+  if (solubility_ppm < 0.0 || stoichiometric_x <= 0.0) {
+    throw std::runtime_error("Henry solubility parameters are invalid.");
+  }
+  return solubility_ppm *
+         std::pow(partial_pressure_pa / 1.0e6, 1.0 / stoichiometric_x);
+}
+
+[[nodiscard]] double SelectCarbonSolubilityPpm(CarbonGasSpecies species,
+                                               const Constants& constants) {
+  switch (species) {
+    case CarbonGasSpecies::kCO2:
+      return constants.carbon_solubility_oxidized_ppm;
+    case CarbonGasSpecies::kCO:
+      return constants.carbon_solubility_intermediate_ppm;
+    case CarbonGasSpecies::kCH4:
+      return constants.carbon_solubility_reduced_ppm;
+  }
+  throw std::runtime_error("Unknown carbon gas species.");
+}
+
+[[nodiscard]] double SelectNitrogenSolubilityPpm(CarbonGasSpecies carbon_species,
+                                                 const Constants& constants) {
+  switch (carbon_species) {
+    case CarbonGasSpecies::kCO2:
+      return constants.nitrogen_solubility_oxidized_ppm;
+    case CarbonGasSpecies::kCO:
+      return constants.nitrogen_solubility_intermediate_ppm;
+    case CarbonGasSpecies::kCH4:
+      return constants.nitrogen_solubility_reduced_ppm;
+  }
+  throw std::runtime_error("Unknown carbon gas species for nitrogen solubility.");
+}
+
+[[nodiscard]] double SelectHydrogenHenrySolubilityPpmSqrtMpa(
+    HydrogenGasSpecies species, const Constants& constants) {
+  switch (species) {
+    case HydrogenGasSpecies::kH2:
+      return constants.hydrogen_h2_solubility_ppm_sqrt_mpa;
+    case HydrogenGasSpecies::kH2O:
+      throw std::runtime_error(
+          "H2O solubility must be solved with the Moore (1998) model.");
+  }
+  throw std::runtime_error("Unknown hydrogen gas species.");
+}
+
+[[nodiscard]] ElementPartitionKg SolveHenryAtmosphereSilicateMetalPartition(
+    double total_element_kg, double silicate_mass_kg, double metal_mass_kg,
+    double partition_coefficient, double solubility_ppm, double stoichiometric_x,
+    double element_molar_mass_kg_per_mol, double mean_molar_mass_kg_per_mol,
+    double surface_gravity_m_s2, double planet_radius_m,
+    const Constants& constants, const char* label) {
+  if (total_element_kg < 0.0 || silicate_mass_kg < 0.0 || metal_mass_kg < 0.0 ||
+      partition_coefficient < 0.0) {
+    throw std::runtime_error(std::string(label) +
+                             " received a negative mass or partition coefficient.");
+  }
+  if (total_element_kg == 0.0) {
+    return {};
   }
   if (silicate_mass_kg <= 0.0) {
-    partition.metal_kg = retained_non_atmosphere_kg;
-    return partition;
+    return {total_element_kg, 0.0, 0.0};
   }
 
-  const double metal_to_silicate_mass_ratio = metal_mass_kg / silicate_mass_kg;
-  const double silicate_share_kg =
-      retained_non_atmosphere_kg /
-      (1.0 + partition_coefficient * metal_to_silicate_mass_ratio);
-  partition.silicate_kg = silicate_share_kg;
-  partition.metal_kg = retained_non_atmosphere_kg - silicate_share_kg;
-  return partition;
+  auto residual = [&](double atmosphere_element_mass_kg) {
+    const double partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+        atmosphere_element_mass_kg, element_molar_mass_kg_per_mol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+    const double silicate_concentration_ppm = ComputeHenrySilicateConcentrationPpm(
+        partial_pressure_pa, solubility_ppm, stoichiometric_x);
+    const double silicate_mass_fraction =
+        PpmToMassFraction(silicate_concentration_ppm);
+    if (silicate_mass_fraction < 0.0 || silicate_mass_fraction > 1.0) {
+      throw std::runtime_error(std::string(label) +
+                               " silicate mass fraction left [0, 1].");
+    }
+    return total_element_kg - atmosphere_element_mass_kg -
+           silicate_mass_fraction * silicate_mass_kg -
+           partition_coefficient * silicate_mass_fraction * metal_mass_kg;
+  };
+
+  const double atmosphere_element_mass_kg = SolveBisection(
+      0.0, total_element_kg, constants.step2_root_rel_tolerance,
+      constants.step2_root_max_iterations, residual, label);
+  const double partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+      atmosphere_element_mass_kg, element_molar_mass_kg_per_mol,
+      mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+  const double silicate_concentration_ppm = ComputeHenrySilicateConcentrationPpm(
+      partial_pressure_pa, solubility_ppm, stoichiometric_x);
+  const double silicate_mass_fraction = PpmToMassFraction(silicate_concentration_ppm);
+  const double silicate_element_mass_kg = silicate_mass_fraction * silicate_mass_kg;
+  const double metal_element_mass_kg =
+      partition_coefficient * silicate_mass_fraction * metal_mass_kg;
+  const double atmosphere_mass_kg =
+      total_element_kg - silicate_element_mass_kg - metal_element_mass_kg;
+  if (atmosphere_mass_kg < -1.0e-9 * std::max(total_element_kg, 1.0)) {
+    throw std::runtime_error(std::string(label) +
+                             " atmosphere mass became negative after Henry solve.");
+  }
+
+  return {
+      std::max(0.0, atmosphere_mass_kg),
+      silicate_element_mass_kg,
+      metal_element_mass_kg,
+  };
+}
+
+[[nodiscard]] ElementPartitionKg SolveMooreHydrogenAtmosphereSilicateMetalPartition(
+    double total_hydrogen_kg, double silicate_mass_kg, double metal_mass_kg,
+    double partition_coefficient, double temperature_k,
+    double mean_molar_mass_kg_per_mol, double surface_gravity_m_s2,
+    double planet_radius_m, double carbon_partial_pressure_pa,
+    double nitrogen_partial_pressure_pa, const Constants& constants) {
+  if (total_hydrogen_kg < 0.0 || silicate_mass_kg < 0.0 || metal_mass_kg < 0.0 ||
+      partition_coefficient < 0.0) {
+    throw std::runtime_error(
+        "SolveMooreHydrogenAtmosphereSilicateMetalPartition received invalid inputs.");
+  }
+  if (total_hydrogen_kg == 0.0) {
+    return {};
+  }
+  if (silicate_mass_kg <= 0.0) {
+    return {total_hydrogen_kg, 0.0, 0.0};
+  }
+
+  const double metal_to_silicate_ratio = metal_mass_kg / silicate_mass_kg;
+  const double upper_silicate_hydrogen_kg =
+      total_hydrogen_kg /
+      (1.0 + partition_coefficient * metal_to_silicate_ratio);
+  const double epsilon = std::max(1.0e-30, total_hydrogen_kg * 1.0e-12);
+  double lower_bound = std::min(epsilon, 0.5 * upper_silicate_hydrogen_kg);
+  double upper_bound = upper_silicate_hydrogen_kg - lower_bound;
+  if (!(upper_bound > lower_bound)) {
+    lower_bound = 0.25 * upper_silicate_hydrogen_kg;
+    upper_bound = 0.75 * upper_silicate_hydrogen_kg;
+  }
+  if (!(upper_bound > lower_bound)) {
+    throw std::runtime_error("Moore H solver could not define a valid bracket.");
+  }
+
+  const double moore_b_sum =
+      constants.moore_b_al * constants.moore_x_al +
+      constants.moore_b_fe * constants.moore_x_fe +
+      constants.moore_b_na * constants.moore_x_na;
+
+  auto residual = [&](double silicate_hydrogen_kg) {
+    const double metal_hydrogen_kg =
+        partition_coefficient * metal_to_silicate_ratio * silicate_hydrogen_kg;
+    const double atmosphere_hydrogen_kg =
+        total_hydrogen_kg - silicate_hydrogen_kg - metal_hydrogen_kg;
+    const double water_partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+        atmosphere_hydrogen_kg, kMolarMassHydrogenElementKgPerMol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+    if (!(water_partial_pressure_pa > 0.0) || !(silicate_hydrogen_kg > 0.0)) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    return constants.moore_c * std::log(water_partial_pressure_pa / 1.0e6) +
+           moore_b_sum *
+               (water_partial_pressure_pa + carbon_partial_pressure_pa +
+                nitrogen_partial_pressure_pa) /
+               (temperature_k * 1.0e6) -
+           2.0 * std::log((kMolarMassH2OKgPerMol * silicate_hydrogen_kg) /
+                          (constants.moore_r_c_to_x * silicate_mass_kg *
+                           kMolarMassHydrogenElementKgPerMol)) +
+           constants.moore_a / temperature_k + constants.moore_d;
+  };
+
+  const double silicate_hydrogen_kg = SolveBisection(
+      lower_bound, upper_bound, constants.step2_root_rel_tolerance,
+      constants.step2_root_max_iterations, residual, "Moore hydrogen partition");
+  const double metal_hydrogen_kg =
+      partition_coefficient * metal_to_silicate_ratio * silicate_hydrogen_kg;
+  const double atmosphere_hydrogen_kg =
+      total_hydrogen_kg - silicate_hydrogen_kg - metal_hydrogen_kg;
+  if (atmosphere_hydrogen_kg < -1.0e-9 * std::max(total_hydrogen_kg, 1.0)) {
+    throw std::runtime_error(
+        "Atmosphere hydrogen mass became negative after Moore solve.");
+  }
+
+  return {
+      std::max(0.0, atmosphere_hydrogen_kg),
+      silicate_hydrogen_kg,
+      metal_hydrogen_kg,
+  };
+}
+
+[[nodiscard]] Step2EquilibriumState SolveThreePhaseVolatileEquilibrium(
+    const ElementMassKg& total_equilibrating_volatiles_kg,
+    const AtmosphereState& initial_mean_guess_state, double silicate_mass_kg,
+    double metal_mass_kg, double carbon_partition_coefficient,
+    double hydrogen_partition_coefficient, double nitrogen_partition_coefficient,
+    double temperature_k, double surface_gravity_m_s2, double planet_radius_m,
+    const Constants& constants) {
+  Step2EquilibriumState state{};
+  if (silicate_mass_kg < 0.0 || metal_mass_kg < 0.0) {
+    throw std::runtime_error("SolveThreePhaseVolatileEquilibrium requires non-negative host masses.");
+  }
+
+  AtmosphereState mean_guess_state = initial_mean_guess_state;
+  double mean_molar_mass_kg_per_mol =
+      ComputeAtmosphereMeanMolecularMolarMassKgPerMol(mean_guess_state);
+  if (!(mean_molar_mass_kg_per_mol > 0.0)) {
+    mean_guess_state.elements_kg = total_equilibrating_volatiles_kg;
+    mean_molar_mass_kg_per_mol =
+        ComputeAtmosphereMeanMolecularMolarMassKgPerMol(mean_guess_state);
+  }
+  if (!(mean_molar_mass_kg_per_mol > 0.0)) {
+    state.mean_molar_mass_kg_per_mol = 0.0;
+    return state;
+  }
+
+  const double carbon_solubility_ppm =
+      SelectCarbonSolubilityPpm(mean_guess_state.carbon_species, constants);
+  const double nitrogen_solubility_ppm =
+      SelectNitrogenSolubilityPpm(mean_guess_state.carbon_species, constants);
+
+  for (int iteration = 0; iteration < constants.step2_outer_max_iterations;
+       ++iteration) {
+    state.carbon = SolveHenryAtmosphereSilicateMetalPartition(
+        total_equilibrating_volatiles_kg.carbon_kg, silicate_mass_kg,
+        metal_mass_kg, carbon_partition_coefficient, carbon_solubility_ppm, 1.0,
+        kMolarMassCarbonElementKgPerMol, mean_molar_mass_kg_per_mol,
+        surface_gravity_m_s2, planet_radius_m, constants, "carbon partition");
+    state.nitrogen = SolveHenryAtmosphereSilicateMetalPartition(
+        total_equilibrating_volatiles_kg.nitrogen_kg, silicate_mass_kg,
+        metal_mass_kg, nitrogen_partition_coefficient, nitrogen_solubility_ppm,
+        1.0, kMolarMassNitrogenElementKgPerMol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m,
+        constants, "nitrogen partition");
+
+    state.carbon_partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+        state.carbon.atmosphere_kg, kMolarMassCarbonElementKgPerMol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+    state.nitrogen_partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+        state.nitrogen.atmosphere_kg, kMolarMassNitrogenElementKgPerMol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+
+    switch (mean_guess_state.hydrogen_species) {
+      case HydrogenGasSpecies::kH2O:
+        state.hydrogen = SolveMooreHydrogenAtmosphereSilicateMetalPartition(
+            total_equilibrating_volatiles_kg.hydrogen_kg, silicate_mass_kg,
+            metal_mass_kg, hydrogen_partition_coefficient, temperature_k,
+            mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m,
+            state.carbon_partial_pressure_pa, state.nitrogen_partial_pressure_pa,
+            constants);
+        break;
+      case HydrogenGasSpecies::kH2:
+        state.hydrogen = SolveHenryAtmosphereSilicateMetalPartition(
+            total_equilibrating_volatiles_kg.hydrogen_kg, silicate_mass_kg,
+            metal_mass_kg, hydrogen_partition_coefficient,
+            SelectHydrogenHenrySolubilityPpmSqrtMpa(
+                mean_guess_state.hydrogen_species, constants),
+            2.0, kMolarMassHydrogenElementKgPerMol,
+            mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m,
+            constants, "hydrogen partition");
+        break;
+    }
+
+    state.hydrogen_partial_pressure_pa = ComputeAtmosphericPartialPressurePa(
+        state.hydrogen.atmosphere_kg, kMolarMassHydrogenElementKgPerMol,
+        mean_molar_mass_kg_per_mol, surface_gravity_m_s2, planet_radius_m);
+
+    AtmosphereState updated_atmosphere = mean_guess_state;
+    updated_atmosphere.elements_kg = {
+        state.carbon.atmosphere_kg,
+        state.hydrogen.atmosphere_kg,
+        state.nitrogen.atmosphere_kg,
+    };
+    const double new_mean_molar_mass_kg_per_mol =
+        ComputeAtmosphereMeanMolecularMolarMassKgPerMol(updated_atmosphere);
+    state.outer_iteration_count = iteration + 1;
+    state.mean_molar_mass_kg_per_mol = new_mean_molar_mass_kg_per_mol;
+
+    if (!(new_mean_molar_mass_kg_per_mol > 0.0)) {
+      return state;
+    }
+    if (std::fabs(new_mean_molar_mass_kg_per_mol - mean_molar_mass_kg_per_mol) /
+            mean_molar_mass_kg_per_mol <
+        constants.step2_outer_rel_tolerance) {
+      return state;
+    }
+
+    mean_molar_mass_kg_per_mol = new_mean_molar_mass_kg_per_mol;
+  }
+
+  throw std::runtime_error(
+      "SolveThreePhaseVolatileEquilibrium outer iteration did not converge.");
 }
 
 [[nodiscard]] StepResult RunOneImpactStep(std::size_t index, const PlanetState& planet_before,
@@ -2045,26 +2396,36 @@ template <typename Func>
     mixed_delta15n_permil = numerator / mixed_nitrogen_mass_kg;
   }
 
-  const ElementPartitionKg carbon_partition = PartitionElementMass(
+  AtmosphereState equilibrium_species_state = planet_before.atmosphere;
+  ApplyAtmosphereSpeciationFromDeltaIw(&equilibrium_species_state, delta_iw_surface);
+  equilibrium_species_state.elements_kg = old_atmosphere_volatiles_kg;
+
+  const ElementMassKg total_equilibrating_volatiles_kg{
       old_atmosphere_volatiles_kg.carbon_kg + mixed_silicate_volatiles_kg.carbon_kg +
           impactor_metal_volatiles_kg.carbon_kg,
-      result.melt_pool.equilibrating_silicate_mass_kg,
-      result.melt_pool.impactor_metal_mass_kg, result.dc_metal_silicate,
-      constants.placeholder_atmosphere_fraction_carbon);
-  const ElementPartitionKg hydrogen_partition = PartitionElementMass(
       old_atmosphere_volatiles_kg.hydrogen_kg +
           mixed_silicate_volatiles_kg.hydrogen_kg +
           impactor_metal_volatiles_kg.hydrogen_kg,
-      result.melt_pool.equilibrating_silicate_mass_kg,
-      result.melt_pool.impactor_metal_mass_kg, result.dh_metal_silicate,
-      constants.placeholder_atmosphere_fraction_hydrogen);
-  const ElementPartitionKg nitrogen_partition = PartitionElementMass(
       old_atmosphere_volatiles_kg.nitrogen_kg +
           mixed_silicate_volatiles_kg.nitrogen_kg +
           impactor_metal_volatiles_kg.nitrogen_kg,
-      result.melt_pool.equilibrating_silicate_mass_kg,
-      result.melt_pool.impactor_metal_mass_kg, result.dn_metal_silicate,
-      constants.placeholder_atmosphere_fraction_nitrogen);
+  };
+  const double partition_planet_radius_m =
+      RadiusFromMassKg(planet_before.total_mass_kg(), constants);
+  const double partition_surface_gravity_m_s2 =
+      Gravity(planet_before.total_mass_kg(), partition_planet_radius_m, constants);
+  const Step2EquilibriumState step2_equilibrium =
+      SolveThreePhaseVolatileEquilibrium(
+          total_equilibrating_volatiles_kg, equilibrium_species_state,
+          result.melt_pool.equilibrating_silicate_mass_kg,
+          result.melt_pool.impactor_metal_mass_kg, result.dc_metal_silicate,
+          result.dh_metal_silicate, result.dn_metal_silicate,
+          result.melt_pool.temperature_k, partition_surface_gravity_m_s2,
+          partition_planet_radius_m, constants);
+
+  const ElementPartitionKg carbon_partition = step2_equilibrium.carbon;
+  const ElementPartitionKg hydrogen_partition = step2_equilibrium.hydrogen;
+  const ElementPartitionKg nitrogen_partition = step2_equilibrium.nitrogen;
 
   const ElementMassKg silicate_after_equilibrium_kg{
       carbon_partition.silicate_kg,
