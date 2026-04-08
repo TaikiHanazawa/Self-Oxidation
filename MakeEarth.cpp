@@ -238,6 +238,69 @@ struct Constants {
   return mass_fraction * 1.0e6;
 }
 
+[[nodiscard]] double RadiusFromMassKg(double mass_kg, const Constants& constants) {
+  if (mass_kg <= 0.0) {
+    throw std::runtime_error("RadiusFromMassKg requires positive mass.");
+  }
+
+  // Sakuraba.C uses the Seager et al. rocky-planet fit in cgs units.
+  const double mass_ratio_to_earth = KgToEarthMass(mass_kg, constants);
+  const double scaled_mass = mass_ratio_to_earth / 6.41;
+  const double log10_radius_in_earth_units =
+      -0.20945 + (1.0 / 3.0) * std::log10(scaled_mass) -
+      0.0804 * std::pow(scaled_mass, 0.394) + std::log10(3.29);
+  return std::pow(10.0, log10_radius_in_earth_units) * constants.earth_radius_m;
+}
+
+[[nodiscard]] double Gravity(double mass_kg, double radius_m,
+                             const Constants& constants) {
+  if (mass_kg <= 0.0) {
+    throw std::runtime_error("Gravity requires positive mass.");
+  }
+  if (radius_m <= 0.0) {
+    throw std::runtime_error("Gravity requires positive radius.");
+  }
+
+  return constants.gravitational_constant_si * mass_kg / (radius_m * radius_m);
+}
+
+[[nodiscard]] double EscapeVelocity(double mass_kg, double radius_m,
+                                    const Constants& constants) {
+  if (mass_kg <= 0.0) {
+    throw std::runtime_error("EscapeVelocity requires positive mass.");
+  }
+  if (radius_m <= 0.0) {
+    throw std::runtime_error("EscapeVelocity requires positive radius.");
+  }
+
+  return std::sqrt(2.0 * constants.gravitational_constant_si * mass_kg / radius_m);
+}
+
+[[nodiscard]] double SphereRadiusFromMassAndDensity(double mass_kg,
+                                                    double density_kg_m3) {
+  if (mass_kg < 0.0) {
+    throw std::runtime_error("SphereRadiusFromMassAndDensity requires non-negative mass.");
+  }
+  if (density_kg_m3 <= 0.0) {
+    throw std::runtime_error(
+        "SphereRadiusFromMassAndDensity requires positive density.");
+  }
+  if (mass_kg == 0.0) {
+    return 0.0;
+  }
+
+  const double volume_m3 = mass_kg / density_kg_m3;
+  return std::cbrt((3.0 * volume_m3) / (4.0 * std::acos(-1.0)));
+}
+
+[[nodiscard]] double MantleThickness(const PlanetState& planet,
+                                     const Constants& constants) {
+  const double planet_radius_m = RadiusFromMassKg(planet.total_mass_kg(), constants);
+  const double core_radius_m =
+      SphereRadiusFromMassAndDensity(planet.core.mass_kg, constants.core_density_kg_m3);
+  return std::max(0.0, planet_radius_m - core_radius_m);
+}
+
 [[nodiscard]] PlanetState MakeInitialPlanetState(const Constants& constants) {
   PlanetState initial{};
   initial.mantle.mass_kg =
@@ -475,11 +538,20 @@ struct Constants {
 
 void PrintInitialSummary(const Constants& constants, const PlanetState& planet) {
   std::cout << std::fixed << std::setprecision(6);
+  const double radius_m = RadiusFromMassKg(planet.total_mass_kg(), constants);
+  const double gravity_m_s2 = Gravity(planet.total_mass_kg(), radius_m, constants);
+  const double escape_velocity_m_s =
+      EscapeVelocity(planet.total_mass_kg(), radius_m, constants);
+  const double mantle_thickness_m = MantleThickness(planet, constants);
   std::cout << "Scaffold ready\n";
   std::cout << "initial_planet_mass_earth="
             << KgToEarthMass(planet.total_mass_kg(), constants) << '\n';
   std::cout << "mantle_mass_kg=" << planet.mantle.mass_kg << '\n';
   std::cout << "core_mass_kg=" << planet.core.mass_kg << '\n';
+  std::cout << "planet_radius_m=" << radius_m << '\n';
+  std::cout << "surface_gravity_m_s2=" << gravity_m_s2 << '\n';
+  std::cout << "escape_velocity_m_s=" << escape_velocity_m_s << '\n';
+  std::cout << "mantle_thickness_m=" << mantle_thickness_m << '\n';
   std::cout << "mantle_C_ppm=" << planet.mantle.volatiles_ppm.carbon_ppm << '\n';
   std::cout << "mantle_H_ppm=" << planet.mantle.volatiles_ppm.hydrogen_ppm
             << '\n';
