@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -195,11 +196,41 @@ struct StepInput {
 
 struct StepResult {
   std::size_t index = 0;
+  Impactor resolved_impactor{};
   PlanetState planet_after{};
   MeltPoolState melt_pool{};
   double dn_metal_silicate = std::numeric_limits<double>::quiet_NaN();
   double dh_metal_silicate = std::numeric_limits<double>::quiet_NaN();
   double dc_metal_silicate = std::numeric_limits<double>::quiet_NaN();
+  double delta15n_silicate_permil = std::numeric_limits<double>::quiet_NaN();
+  double delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
+  double erosion_fraction = 0.0;
+  ElementMassKg eroded_volatiles_kg{};
+  ElementMassKg conservation_error_kg{};
+};
+
+struct DifferentiatedImpactorSnapshot {
+  ElementPpm silicate_volatiles_ppm{};
+  ElementPpm metal_volatiles_ppm{};
+  double delta15n_silicate_permil = 0.0;
+  double delta15n_metal_permil = 0.0;
+};
+
+struct SimplifiedRunResult {
+  PlanetState final_planet{};
+  std::size_t completed_steps = 0;
+  bool has_precompute_snapshot = false;
+  DifferentiatedImpactorSnapshot precompute_snapshot{};
+  ElementMassKg cumulative_eroded_kg{};
+  ElementMassKg max_abs_conservation_error_kg{};
+  StepResult first_step{};
+  StepResult last_step{};
+};
+
+struct ElementPartitionKg {
+  double atmosphere_kg = 0.0;
+  double silicate_kg = 0.0;
+  double metal_kg = 0.0;
 };
 
 struct Constants {
@@ -223,6 +254,17 @@ struct Constants {
   double geotherm_gradient_k_m = 1.0e-4;
   double melt_pool_convergence_tolerance_m = 1.0;
   int melt_pool_max_iterations = 100;
+  double placeholder_dn_metal_silicate = 20.0;
+  double placeholder_dh_metal_silicate = 1.0;
+  double placeholder_dc_metal_silicate = 50.0;
+  double placeholder_delta_iw_surface = -2.0;
+  double placeholder_delta15n_metal_silicate_permil = -5.0;
+  double placeholder_atmosphere_fraction_carbon = 0.10;
+  double placeholder_atmosphere_fraction_hydrogen = 0.25;
+  double placeholder_atmosphere_fraction_nitrogen = 0.10;
+  double placeholder_erosion_fraction_precompute = 1.0e-4;
+  double placeholder_erosion_fraction_giant_impact = 0.05;
+  double placeholder_erosion_fraction_late_veneer = 0.01;
 
   double initial_planet_mass_earth = 0.01;
   double precompute_end_mass_earth = 0.10;
@@ -264,6 +306,68 @@ struct Constants {
 
 [[nodiscard]] double MassFractionToPpm(double mass_fraction) {
   return mass_fraction * 1.0e6;
+}
+
+[[nodiscard]] ElementMassKg PpmToElementMassKg(const ElementPpm& concentrations_ppm,
+                                               double host_mass_kg) {
+  if (host_mass_kg < 0.0) {
+    throw std::runtime_error("PpmToElementMassKg requires non-negative host mass.");
+  }
+
+  return {
+      PpmToMassFraction(concentrations_ppm.carbon_ppm) * host_mass_kg,
+      PpmToMassFraction(concentrations_ppm.hydrogen_ppm) * host_mass_kg,
+      PpmToMassFraction(concentrations_ppm.nitrogen_ppm) * host_mass_kg,
+  };
+}
+
+[[nodiscard]] ElementPpm ElementMassKgToPpm(const ElementMassKg& element_masses_kg,
+                                            double host_mass_kg) {
+  if (host_mass_kg < 0.0) {
+    throw std::runtime_error("ElementMassKgToPpm requires non-negative host mass.");
+  }
+  if (host_mass_kg == 0.0) {
+    return {};
+  }
+
+  return {
+      MassFractionToPpm(element_masses_kg.carbon_kg / host_mass_kg),
+      MassFractionToPpm(element_masses_kg.hydrogen_kg / host_mass_kg),
+      MassFractionToPpm(element_masses_kg.nitrogen_kg / host_mass_kg),
+  };
+}
+
+[[nodiscard]] ElementMassKg AddElementMassKg(const ElementMassKg& left,
+                                             const ElementMassKg& right) {
+  return {
+      left.carbon_kg + right.carbon_kg,
+      left.hydrogen_kg + right.hydrogen_kg,
+      left.nitrogen_kg + right.nitrogen_kg,
+  };
+}
+
+[[nodiscard]] ElementMassKg SubtractElementMassKg(const ElementMassKg& left,
+                                                  const ElementMassKg& right) {
+  return {
+      left.carbon_kg - right.carbon_kg,
+      left.hydrogen_kg - right.hydrogen_kg,
+      left.nitrogen_kg - right.nitrogen_kg,
+  };
+}
+
+[[nodiscard]] ElementMassKg MaxAbsElementMassKg(const ElementMassKg& left,
+                                                const ElementMassKg& right) {
+  return {
+      std::max(std::fabs(left.carbon_kg), std::fabs(right.carbon_kg)),
+      std::max(std::fabs(left.hydrogen_kg), std::fabs(right.hydrogen_kg)),
+      std::max(std::fabs(left.nitrogen_kg), std::fabs(right.nitrogen_kg)),
+  };
+}
+
+[[nodiscard]] double MaxComponentAbs(const ElementMassKg& element_masses_kg) {
+  return std::max({std::fabs(element_masses_kg.carbon_kg),
+                   std::fabs(element_masses_kg.hydrogen_kg),
+                   std::fabs(element_masses_kg.nitrogen_kg)});
 }
 
 [[nodiscard]] double Pi() {
@@ -561,6 +665,389 @@ struct Constants {
   return melt_pool;
 }
 
+void ApplyPlaceholderAtmosphereSpeciation(AtmosphereState* atmosphere,
+                                          const Constants& constants) {
+  if (atmosphere == nullptr) {
+    throw std::runtime_error("ApplyPlaceholderAtmosphereSpeciation received null atmosphere.");
+  }
+
+  if (constants.placeholder_delta_iw_surface > -1.0) {
+    atmosphere->carbon_species = CarbonGasSpecies::kCO2;
+    atmosphere->hydrogen_species = HydrogenGasSpecies::kH2O;
+    atmosphere->nitrogen_species = NitrogenGasSpecies::kN2;
+  } else if (constants.placeholder_delta_iw_surface > -3.0) {
+    atmosphere->carbon_species = CarbonGasSpecies::kCO;
+    atmosphere->hydrogen_species = HydrogenGasSpecies::kH2;
+    atmosphere->nitrogen_species = NitrogenGasSpecies::kN2;
+  } else {
+    atmosphere->carbon_species = CarbonGasSpecies::kCH4;
+    atmosphere->hydrogen_species = HydrogenGasSpecies::kH2;
+    atmosphere->nitrogen_species = NitrogenGasSpecies::kN2;
+  }
+}
+
+[[nodiscard]] double PlaceholderErosionFraction(GrowthPhase phase,
+                                                const Constants& constants) {
+  switch (phase) {
+    case GrowthPhase::kPrecomputeAccretion:
+      return constants.placeholder_erosion_fraction_precompute;
+    case GrowthPhase::kGiantImpact:
+      return constants.placeholder_erosion_fraction_giant_impact;
+    case GrowthPhase::kLateVeneer:
+      return constants.placeholder_erosion_fraction_late_veneer;
+  }
+  throw std::runtime_error("Unknown GrowthPhase in PlaceholderErosionFraction.");
+}
+
+[[nodiscard]] Impactor ResolveImpactorForStep(
+    const Impactor& impactor,
+    const std::optional<DifferentiatedImpactorSnapshot>& precompute_snapshot) {
+  Impactor resolved = impactor;
+
+  switch (resolved.silicate_inventory_source) {
+    case InventorySource::kNone:
+      resolved.silicate_volatiles_ppm = {};
+      resolved.delta15n_silicate_permil = 0.0;
+      break;
+    case InventorySource::kEcBulk:
+    case InventorySource::kCiBulk:
+      break;
+    case InventorySource::kPrecomputeOutputAt0p10EarthMass:
+      if (!precompute_snapshot.has_value()) {
+        throw std::runtime_error("Impactor requires precompute silicate snapshot.");
+      }
+      resolved.silicate_volatiles_ppm = precompute_snapshot->silicate_volatiles_ppm;
+      resolved.delta15n_silicate_permil =
+          precompute_snapshot->delta15n_silicate_permil;
+      break;
+    case InventorySource::kPrecomputeCoreAt0p10EarthMass:
+      throw std::runtime_error(
+          "Silicate inventory source cannot be precompute core snapshot.");
+  }
+
+  switch (resolved.metal_inventory_source) {
+    case InventorySource::kNone:
+      resolved.metal_volatiles_ppm = {};
+      resolved.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
+      break;
+    case InventorySource::kEcBulk:
+    case InventorySource::kCiBulk:
+      break;
+    case InventorySource::kPrecomputeCoreAt0p10EarthMass:
+      if (!precompute_snapshot.has_value()) {
+        throw std::runtime_error("Impactor requires precompute core snapshot.");
+      }
+      resolved.metal_volatiles_ppm = precompute_snapshot->metal_volatiles_ppm;
+      resolved.delta15n_metal_permil = precompute_snapshot->delta15n_metal_permil;
+      break;
+    case InventorySource::kPrecomputeOutputAt0p10EarthMass:
+      throw std::runtime_error(
+          "Metal inventory source cannot be precompute silicate snapshot.");
+  }
+
+  resolved.Validate();
+  return resolved;
+}
+
+[[nodiscard]] DifferentiatedImpactorSnapshot CaptureDifferentiatedImpactorSnapshot(
+    const PlanetState& planet) {
+  planet.Validate();
+  return {
+      planet.mantle.volatiles_ppm,
+      planet.core.volatiles_ppm,
+      planet.mantle.delta15n_permil,
+      planet.core.delta15n_permil,
+  };
+}
+
+[[nodiscard]] ElementPartitionKg PartitionElementMass(double total_element_kg,
+                                                      double silicate_mass_kg,
+                                                      double metal_mass_kg,
+                                                      double partition_coefficient,
+                                                      double atmosphere_fraction) {
+  if (total_element_kg < 0.0) {
+    throw std::runtime_error("PartitionElementMass requires non-negative total mass.");
+  }
+  if (silicate_mass_kg < 0.0 || metal_mass_kg < 0.0) {
+    throw std::runtime_error("PartitionElementMass requires non-negative host masses.");
+  }
+  if (partition_coefficient < 0.0) {
+    throw std::runtime_error("PartitionElementMass requires non-negative partition coefficient.");
+  }
+
+  const double clamped_atmosphere_fraction =
+      std::clamp(atmosphere_fraction, 0.0, 1.0);
+  ElementPartitionKg partition{};
+  partition.atmosphere_kg = total_element_kg * clamped_atmosphere_fraction;
+
+  const double retained_non_atmosphere_kg =
+      total_element_kg - partition.atmosphere_kg;
+  if (retained_non_atmosphere_kg <= 0.0) {
+    return partition;
+  }
+
+  if (silicate_mass_kg <= 0.0 && metal_mass_kg <= 0.0) {
+    partition.atmosphere_kg = total_element_kg;
+    return partition;
+  }
+  if (metal_mass_kg <= 0.0) {
+    partition.silicate_kg = retained_non_atmosphere_kg;
+    return partition;
+  }
+  if (silicate_mass_kg <= 0.0) {
+    partition.metal_kg = retained_non_atmosphere_kg;
+    return partition;
+  }
+
+  const double metal_to_silicate_mass_ratio = metal_mass_kg / silicate_mass_kg;
+  const double silicate_share_kg =
+      retained_non_atmosphere_kg /
+      (1.0 + partition_coefficient * metal_to_silicate_mass_ratio);
+  partition.silicate_kg = silicate_share_kg;
+  partition.metal_kg = retained_non_atmosphere_kg - silicate_share_kg;
+  return partition;
+}
+
+[[nodiscard]] StepResult RunOneImpactStep(std::size_t index, const PlanetState& planet_before,
+                                          const Impactor& resolved_impactor,
+                                          const Constants& constants) {
+  planet_before.Validate();
+  resolved_impactor.Validate();
+
+  StepResult result{};
+  result.index = index;
+  result.resolved_impactor = resolved_impactor;
+  result.dn_metal_silicate = constants.placeholder_dn_metal_silicate;
+  result.dh_metal_silicate = constants.placeholder_dh_metal_silicate;
+  result.dc_metal_silicate = constants.placeholder_dc_metal_silicate;
+  result.erosion_fraction =
+      PlaceholderErosionFraction(resolved_impactor.phase, constants);
+  result.melt_pool =
+      ComputeMeltPoolState(planet_before, resolved_impactor, constants);
+
+  const double target_unmelted_mantle_mass_kg =
+      planet_before.mantle.mass_kg - result.melt_pool.target_melt_mass_kg;
+  if (target_unmelted_mantle_mass_kg < -1.0e-6) {
+    throw std::runtime_error("Melt pool consumed more mantle mass than available.");
+  }
+
+  const ElementMassKg old_mantle_volatiles_kg =
+      PpmToElementMassKg(planet_before.mantle.volatiles_ppm,
+                         planet_before.mantle.mass_kg);
+  const ElementMassKg old_core_volatiles_kg =
+      PpmToElementMassKg(planet_before.core.volatiles_ppm, planet_before.core.mass_kg);
+  const ElementMassKg old_atmosphere_volatiles_kg =
+      planet_before.atmosphere.elements_kg;
+
+  const ElementMassKg target_melt_volatiles_kg =
+      PpmToElementMassKg(planet_before.mantle.volatiles_ppm,
+                         result.melt_pool.target_melt_mass_kg);
+  const ElementMassKg target_unmelted_volatiles_kg =
+      PpmToElementMassKg(planet_before.mantle.volatiles_ppm,
+                         std::max(0.0, target_unmelted_mantle_mass_kg));
+  const ElementMassKg impactor_silicate_volatiles_kg =
+      PpmToElementMassKg(resolved_impactor.silicate_volatiles_ppm,
+                         result.melt_pool.impactor_silicate_mass_kg);
+  const ElementMassKg impactor_metal_volatiles_kg =
+      PpmToElementMassKg(resolved_impactor.metal_volatiles_ppm,
+                         result.melt_pool.impactor_metal_mass_kg);
+
+  const ElementMassKg mixed_silicate_volatiles_kg = AddElementMassKg(
+      target_melt_volatiles_kg, impactor_silicate_volatiles_kg);
+
+  double mixed_delta15n_permil = planet_before.mantle.delta15n_permil;
+  const double mixed_nitrogen_mass_kg = mixed_silicate_volatiles_kg.nitrogen_kg;
+  if (mixed_nitrogen_mass_kg > 0.0) {
+    double numerator = 0.0;
+    if (target_melt_volatiles_kg.nitrogen_kg > 0.0) {
+      numerator += target_melt_volatiles_kg.nitrogen_kg *
+                   planet_before.mantle.delta15n_permil;
+    }
+    if (impactor_silicate_volatiles_kg.nitrogen_kg > 0.0) {
+      numerator += impactor_silicate_volatiles_kg.nitrogen_kg *
+                   resolved_impactor.delta15n_silicate_permil;
+    }
+    mixed_delta15n_permil = numerator / mixed_nitrogen_mass_kg;
+  }
+
+  const ElementPartitionKg carbon_partition = PartitionElementMass(
+      old_atmosphere_volatiles_kg.carbon_kg + mixed_silicate_volatiles_kg.carbon_kg +
+          impactor_metal_volatiles_kg.carbon_kg,
+      result.melt_pool.equilibrating_silicate_mass_kg,
+      result.melt_pool.impactor_metal_mass_kg, result.dc_metal_silicate,
+      constants.placeholder_atmosphere_fraction_carbon);
+  const ElementPartitionKg hydrogen_partition = PartitionElementMass(
+      old_atmosphere_volatiles_kg.hydrogen_kg +
+          mixed_silicate_volatiles_kg.hydrogen_kg +
+          impactor_metal_volatiles_kg.hydrogen_kg,
+      result.melt_pool.equilibrating_silicate_mass_kg,
+      result.melt_pool.impactor_metal_mass_kg, result.dh_metal_silicate,
+      constants.placeholder_atmosphere_fraction_hydrogen);
+  const ElementPartitionKg nitrogen_partition = PartitionElementMass(
+      old_atmosphere_volatiles_kg.nitrogen_kg +
+          mixed_silicate_volatiles_kg.nitrogen_kg +
+          impactor_metal_volatiles_kg.nitrogen_kg,
+      result.melt_pool.equilibrating_silicate_mass_kg,
+      result.melt_pool.impactor_metal_mass_kg, result.dn_metal_silicate,
+      constants.placeholder_atmosphere_fraction_nitrogen);
+
+  const ElementMassKg silicate_after_equilibrium_kg{
+      carbon_partition.silicate_kg,
+      hydrogen_partition.silicate_kg,
+      nitrogen_partition.silicate_kg,
+  };
+  const ElementMassKg metal_after_equilibrium_kg{
+      carbon_partition.metal_kg,
+      hydrogen_partition.metal_kg,
+      nitrogen_partition.metal_kg,
+  };
+  const ElementMassKg atmosphere_after_equilibrium_kg{
+      carbon_partition.atmosphere_kg,
+      hydrogen_partition.atmosphere_kg,
+      nitrogen_partition.atmosphere_kg,
+  };
+
+  double delta15n_bulk_permil = mixed_delta15n_permil;
+  const double total_n_before_equilibrium_kg =
+      old_atmosphere_volatiles_kg.nitrogen_kg +
+      mixed_silicate_volatiles_kg.nitrogen_kg +
+      impactor_metal_volatiles_kg.nitrogen_kg;
+  if (total_n_before_equilibrium_kg > 0.0) {
+    double numerator = 0.0;
+    if (mixed_silicate_volatiles_kg.nitrogen_kg > 0.0) {
+      numerator += mixed_silicate_volatiles_kg.nitrogen_kg * mixed_delta15n_permil;
+    }
+    if (old_atmosphere_volatiles_kg.nitrogen_kg > 0.0) {
+      numerator += old_atmosphere_volatiles_kg.nitrogen_kg *
+                   planet_before.atmosphere.delta15n_permil;
+    }
+    if (impactor_metal_volatiles_kg.nitrogen_kg > 0.0) {
+      if (!std::isfinite(resolved_impactor.delta15n_metal_permil)) {
+        throw std::runtime_error(
+            "Impactor metal carries nitrogen mass but has undefined delta15N.");
+      }
+      numerator += impactor_metal_volatiles_kg.nitrogen_kg *
+                   resolved_impactor.delta15n_metal_permil;
+    }
+    delta15n_bulk_permil = numerator / total_n_before_equilibrium_kg;
+  }
+
+  result.delta15n_silicate_permil = delta15n_bulk_permil;
+  result.delta15n_metal_permil = delta15n_bulk_permil;
+  if (total_n_before_equilibrium_kg > 0.0) {
+    result.delta15n_silicate_permil =
+        delta15n_bulk_permil -
+        (metal_after_equilibrium_kg.nitrogen_kg / total_n_before_equilibrium_kg) *
+            constants.placeholder_delta15n_metal_silicate_permil;
+    result.delta15n_metal_permil =
+        result.delta15n_silicate_permil +
+        constants.placeholder_delta15n_metal_silicate_permil;
+  }
+
+  PlanetState planet_after = planet_before;
+  planet_after.redox.delta_iw_surface = constants.placeholder_delta_iw_surface;
+  planet_after.redox.oxidized_fe0_mass_kg = 0.0;
+
+  planet_after.core.mass_kg =
+      planet_before.core.mass_kg + result.melt_pool.impactor_metal_mass_kg;
+  planet_after.mantle.mass_kg =
+      planet_before.mantle.mass_kg + result.melt_pool.impactor_silicate_mass_kg;
+
+  const ElementMassKg new_core_volatiles_kg =
+      AddElementMassKg(old_core_volatiles_kg, metal_after_equilibrium_kg);
+  const ElementMassKg new_mantle_volatiles_kg =
+      AddElementMassKg(target_unmelted_volatiles_kg, silicate_after_equilibrium_kg);
+
+  planet_after.core.volatiles_ppm =
+      ElementMassKgToPpm(new_core_volatiles_kg, planet_after.core.mass_kg);
+  planet_after.mantle.volatiles_ppm =
+      ElementMassKgToPpm(new_mantle_volatiles_kg, planet_after.mantle.mass_kg);
+
+  const double new_core_nitrogen_kg = new_core_volatiles_kg.nitrogen_kg;
+  if (new_core_nitrogen_kg > 0.0) {
+    const double numerator =
+        old_core_volatiles_kg.nitrogen_kg * planet_before.core.delta15n_permil +
+        metal_after_equilibrium_kg.nitrogen_kg * result.delta15n_metal_permil;
+    planet_after.core.delta15n_permil = numerator / new_core_nitrogen_kg;
+  }
+
+  const double new_mantle_nitrogen_kg = new_mantle_volatiles_kg.nitrogen_kg;
+  if (new_mantle_nitrogen_kg > 0.0) {
+    const double numerator =
+        target_unmelted_volatiles_kg.nitrogen_kg * planet_before.mantle.delta15n_permil +
+        silicate_after_equilibrium_kg.nitrogen_kg * result.delta15n_silicate_permil;
+    planet_after.mantle.delta15n_permil = numerator / new_mantle_nitrogen_kg;
+  }
+
+  planet_after.atmosphere.elements_kg = atmosphere_after_equilibrium_kg;
+  planet_after.atmosphere.delta15n_permil = result.delta15n_silicate_permil;
+  ApplyPlaceholderAtmosphereSpeciation(&planet_after.atmosphere, constants);
+
+  result.eroded_volatiles_kg = {
+      planet_after.atmosphere.elements_kg.carbon_kg * result.erosion_fraction,
+      planet_after.atmosphere.elements_kg.hydrogen_kg * result.erosion_fraction,
+      planet_after.atmosphere.elements_kg.nitrogen_kg * result.erosion_fraction,
+  };
+  planet_after.atmosphere.elements_kg = SubtractElementMassKg(
+      planet_after.atmosphere.elements_kg, result.eroded_volatiles_kg);
+
+  const ElementMassKg total_before_kg = AddElementMassKg(
+      AddElementMassKg(old_mantle_volatiles_kg, old_core_volatiles_kg),
+      AddElementMassKg(old_atmosphere_volatiles_kg,
+                       AddElementMassKg(impactor_silicate_volatiles_kg,
+                                        impactor_metal_volatiles_kg)));
+  const ElementMassKg total_after_with_loss_kg = AddElementMassKg(
+      AddElementMassKg(
+          PpmToElementMassKg(planet_after.mantle.volatiles_ppm, planet_after.mantle.mass_kg),
+          PpmToElementMassKg(planet_after.core.volatiles_ppm, planet_after.core.mass_kg)),
+      AddElementMassKg(planet_after.atmosphere.elements_kg, result.eroded_volatiles_kg));
+  result.conservation_error_kg =
+      SubtractElementMassKg(total_after_with_loss_kg, total_before_kg);
+
+  planet_after.Validate();
+  result.planet_after = planet_after;
+  return result;
+}
+
+[[nodiscard]] SimplifiedRunResult RunScenarioSimplified(
+    const PlanetState& initial_planet, const std::vector<Impactor>& scenario,
+    const Constants& constants) {
+  SimplifiedRunResult run{};
+  PlanetState current_planet = initial_planet;
+  std::optional<DifferentiatedImpactorSnapshot> precompute_snapshot;
+
+  for (std::size_t index = 0; index < scenario.size(); ++index) {
+    const Impactor resolved_impactor =
+        ResolveImpactorForStep(scenario.at(index), precompute_snapshot);
+    const StepResult step_result =
+        RunOneImpactStep(index, current_planet, resolved_impactor, constants);
+
+    if (index == 0) {
+      run.first_step = step_result;
+    }
+    run.last_step = step_result;
+    run.completed_steps = index + 1;
+    run.cumulative_eroded_kg =
+        AddElementMassKg(run.cumulative_eroded_kg, step_result.eroded_volatiles_kg);
+    run.max_abs_conservation_error_kg = MaxAbsElementMassKg(
+        run.max_abs_conservation_error_kg, step_result.conservation_error_kg);
+    current_planet = step_result.planet_after;
+
+    const bool is_last_precompute_step =
+        scenario.at(index).phase == GrowthPhase::kPrecomputeAccretion &&
+        (index + 1 == scenario.size() ||
+         scenario.at(index + 1).phase != GrowthPhase::kPrecomputeAccretion);
+    if (is_last_precompute_step) {
+      precompute_snapshot = CaptureDifferentiatedImpactorSnapshot(current_planet);
+      run.has_precompute_snapshot = true;
+      run.precompute_snapshot = *precompute_snapshot;
+    }
+  }
+
+  run.final_planet = current_planet;
+  return run;
+}
+
 [[nodiscard]] PlanetState MakeInitialPlanetState(const Constants& constants) {
   PlanetState initial{};
   initial.mantle.mass_kg =
@@ -596,6 +1083,36 @@ struct Constants {
       return "ci_like_differentiated";
   }
   throw std::runtime_error("Unknown ImpactorClass.");
+}
+
+[[nodiscard]] std::string ToString(CarbonGasSpecies species) {
+  switch (species) {
+    case CarbonGasSpecies::kCO2:
+      return "CO2";
+    case CarbonGasSpecies::kCO:
+      return "CO";
+    case CarbonGasSpecies::kCH4:
+      return "CH4";
+  }
+  throw std::runtime_error("Unknown CarbonGasSpecies.");
+}
+
+[[nodiscard]] std::string ToString(HydrogenGasSpecies species) {
+  switch (species) {
+    case HydrogenGasSpecies::kH2O:
+      return "H2O";
+    case HydrogenGasSpecies::kH2:
+      return "H2";
+  }
+  throw std::runtime_error("Unknown HydrogenGasSpecies.");
+}
+
+[[nodiscard]] std::string ToString(NitrogenGasSpecies species) {
+  switch (species) {
+    case NitrogenGasSpecies::kN2:
+      return "N2";
+  }
+  throw std::runtime_error("Unknown NitrogenGasSpecies.");
 }
 
 [[nodiscard]] std::string ToString(InventorySource inventory_source) {
@@ -877,6 +1394,59 @@ void PrintMeltPoolSummary(const Impactor& impactor, const MeltPoolState& melt_po
             << melt_pool.equilibrating_silicate_mass_kg << '\n';
 }
 
+void PrintSimplifiedRunSummary(const Constants& constants,
+                               const SimplifiedRunResult& run) {
+  std::cout << "simple_run_completed_steps=" << run.completed_steps << '\n';
+  std::cout << "simple_run_has_precompute_snapshot="
+            << (run.has_precompute_snapshot ? "yes" : "no") << '\n';
+  std::cout << "simple_run_final_planet_mass_earth="
+            << KgToEarthMass(run.final_planet.total_mass_kg(), constants) << '\n';
+  std::cout << "simple_run_final_mantle_mass_earth="
+            << KgToEarthMass(run.final_planet.mantle.mass_kg, constants) << '\n';
+  std::cout << "simple_run_final_core_mass_earth="
+            << KgToEarthMass(run.final_planet.core.mass_kg, constants) << '\n';
+  std::cout << "simple_run_final_mantle_C_ppm="
+            << run.final_planet.mantle.volatiles_ppm.carbon_ppm << '\n';
+  std::cout << "simple_run_final_mantle_H_ppm="
+            << run.final_planet.mantle.volatiles_ppm.hydrogen_ppm << '\n';
+  std::cout << "simple_run_final_mantle_N_ppm="
+            << run.final_planet.mantle.volatiles_ppm.nitrogen_ppm << '\n';
+  std::cout << "simple_run_final_core_C_ppm="
+            << run.final_planet.core.volatiles_ppm.carbon_ppm << '\n';
+  std::cout << "simple_run_final_core_H_ppm="
+            << run.final_planet.core.volatiles_ppm.hydrogen_ppm << '\n';
+  std::cout << "simple_run_final_core_N_ppm="
+            << run.final_planet.core.volatiles_ppm.nitrogen_ppm << '\n';
+  std::cout << "simple_run_final_atm_C_kg="
+            << run.final_planet.atmosphere.elements_kg.carbon_kg << '\n';
+  std::cout << "simple_run_final_atm_H_kg="
+            << run.final_planet.atmosphere.elements_kg.hydrogen_kg << '\n';
+  std::cout << "simple_run_final_atm_N_kg="
+            << run.final_planet.atmosphere.elements_kg.nitrogen_kg << '\n';
+  std::cout << "simple_run_final_atm_species_C="
+            << ToString(run.final_planet.atmosphere.carbon_species) << '\n';
+  std::cout << "simple_run_final_atm_species_H="
+            << ToString(run.final_planet.atmosphere.hydrogen_species) << '\n';
+  std::cout << "simple_run_final_atm_species_N="
+            << ToString(run.final_planet.atmosphere.nitrogen_species) << '\n';
+  std::cout << "simple_run_cumulative_eroded_C_kg="
+            << run.cumulative_eroded_kg.carbon_kg << '\n';
+  std::cout << "simple_run_cumulative_eroded_H_kg="
+            << run.cumulative_eroded_kg.hydrogen_kg << '\n';
+  std::cout << "simple_run_cumulative_eroded_N_kg="
+            << run.cumulative_eroded_kg.nitrogen_kg << '\n';
+  std::cout << "simple_run_max_abs_conservation_error_C_kg="
+            << run.max_abs_conservation_error_kg.carbon_kg << '\n';
+  std::cout << "simple_run_max_abs_conservation_error_H_kg="
+            << run.max_abs_conservation_error_kg.hydrogen_kg << '\n';
+  std::cout << "simple_run_max_abs_conservation_error_N_kg="
+            << run.max_abs_conservation_error_kg.nitrogen_kg << '\n';
+  std::cout << "simple_run_first_step_error_max_kg="
+            << MaxComponentAbs(run.first_step.conservation_error_kg) << '\n';
+  std::cout << "simple_run_last_step_error_max_kg="
+            << MaxComponentAbs(run.last_step.conservation_error_kg) << '\n';
+}
+
 }  // namespace self_oxidation
 
 int main() {
@@ -888,13 +1458,14 @@ int main() {
         self_oxidation::MakeInitialPlanetState(constants);
     const std::vector<self_oxidation::Impactor> scenario =
         self_oxidation::BuildScenario(constants);
-    const self_oxidation::MeltPoolState first_melt_pool =
-        self_oxidation::ComputeMeltPoolState(initial_planet, scenario.front(),
-                                             constants);
+    const self_oxidation::SimplifiedRunResult simple_run =
+        self_oxidation::RunScenarioSimplified(initial_planet, scenario, constants);
 
     self_oxidation::PrintInitialSummary(constants, initial_planet);
     self_oxidation::PrintScenarioSummary(constants, initial_planet, scenario);
-    self_oxidation::PrintMeltPoolSummary(scenario.front(), first_melt_pool);
+    self_oxidation::PrintMeltPoolSummary(simple_run.first_step.resolved_impactor,
+                                         simple_run.first_step.melt_pool);
+    self_oxidation::PrintSimplifiedRunSummary(constants, simple_run);
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "error: " << exception.what() << '\n';
