@@ -600,31 +600,37 @@ log₁₀(D_C) = 1.49 + 3000/T − 235×P/T
 **X_S の扱い：**
 - `X_S` も equilibrating impactor metal の alloy composition を表す量であり，ここでは `X_S ≈ 0.02` の representative value を用いる
 
-**X_O の計算（平衡から毎ステップ算出）：**
+**X_O の計算（Fischer et al. 2015 Table 2 の O exchange coefficient を使用）：**
 
-X_O は独立した溶解度式を使わず，金属-ケイ酸塩 O 分配平衡から直接計算する：
+X_O は独立した溶解度式ではなく，Fischer et al. (2015, *GCA*) が Si/O 分配に対して与えた O の exchange coefficient `K_D^O` から計算する：
 
 ```
-FeO (silicate) ⇌ Fe (metal) + O (dissolved in metal)
-
-X_O^metal = K(P,T) × X_FeO^silicate / X_Fe^metal
+K_D^O = (X_O^metal × X_Fe^metal) / X_FeO^silicate
+log10(K_D^O) = a_O + b_O/T + c_O×P/T
 ```
+
+Fischer et al. (2015) Table 2 では，O に対して
+```
+a_O = 0.6,
+ b_O = −3800 K,
+ c_O ≈ 0
+```
+であり，O partitioning は `P > 5 GPa` のデータ範囲で圧力依存が弱い．したがって本モデルでは
+
+```
+log10(K_D^O) = 0.6 − 3800/T
+X_O^metal    = K_D^O × X_FeO^silicate / X_Fe^metal
+```
+
+を用いる．
 
 - **X_FeO^silicate**：Section 3-5 で self-oxidation を通じて逐次更新される量（初期値 0.056）
-- **X_Fe^metal** = 1 − x_S − x_C − x_Ni − x_Si（質量収支から既知）
-- **K(P,T)**：Fischer et al. (2015, *GCA*) の実験パラメータから：
-
-```
-ln K(P,T) = −6910/T + 3.52 + 71×P/T
-```
-
-（活量係数比 γ_FeO/(γ_Fe × γ_O) は定数近似；Fischer 2015 実験範囲内で有効）
-
-この形は Fischer 2015 の溶解度式を X_FeO と X_Fe で明示的に割り戻したものであり，X_FeO が逐次変化する本モデルで自己整合的に X_O を与える．
+- **X_Fe^metal** = 1 − x_S − x_C − x_Ni − x_Si（equilibrating impactor metal の Fe モル分率）
+- この形は Fischer 2015 が直接フィットした `K_D^O` を用いるものであり，`X_O` を別の経験式から外挿するよりも本モデルの圧力温度範囲に対して保守的である
 
 重要な注意：
 - Fischer 2020 Eq.(1) は C-undersaturated 条件（graphite なし）のデータに基づく → 本モデルの想定（EC-like impactor で C 供給があるが過飽和でない）に整合
-- 低圧（< 15 GPa）では圧力増加で D_C が減少，高圧では増加に転じる（Eq.1 の −235×P/T 項で説明）
+- `D_C` に入る `X_O` は上の `K_D^O` から毎ステップ自己整合的に更新する
 
 ---
 
