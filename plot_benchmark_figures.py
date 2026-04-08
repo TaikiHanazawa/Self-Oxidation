@@ -153,102 +153,224 @@ def format_mass_label(mass_earth: float) -> str:
     return f'{mass_earth * 100:.1f} wt%' if mass_earth < 1.0 else 'full accreted'
 
 
-def render_sakuraba_fig2(rows: list[dict[str, object]], output_path: Path) -> None:
-    width = 1080
-    height = 620
-    left = 90
-    top = 90
-    panel_w = 380
-    panel_h = 360
-    gap = 120
+def is_precompute_label(label: str) -> bool:
+    return label.startswith('PRE-') or label.startswith('precompute_')
+
+
+def sakuraba_snapshot_label(row: dict[str, object]) -> str:
+    label = str(row['label'])
+    if is_precompute_label(label):
+        return 'End of early accretion'
+    if label.startswith('GI'):
+        return label
+    if label.startswith('LateVeneer'):
+        return 'Final after late veneer'
+    return format_mass_label(float(row['planet_mass_after_earth']))
+
+
+def sakuraba_main_snapshots(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    precompute_rows = [row for row in rows if is_precompute_label(str(row['label']))]
+    gi_rows = [row for row in rows if str(row['label']).startswith('GI')]
+    late_rows = [row for row in rows if str(row['label']).startswith('LateVeneer')]
+    snapshots: list[dict[str, object]] = []
+    if precompute_rows:
+        snapshots.append(precompute_rows[-1])
+    snapshots.extend(gi_rows)
+    if late_rows:
+        snapshots.append(late_rows[-1])
+    return unique_rows(snapshots)
+
+
+def shi_reference_markers(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    precompute_rows = [row for row in rows if is_precompute_label(str(row['label']))]
+    gi_rows = [row for row in rows if str(row['label']).startswith('GI')]
+    markers: list[dict[str, object]] = []
+    if precompute_rows:
+        markers.append(precompute_rows[-1])
+    markers.extend(gi_rows)
+    return unique_rows(markers)
+
+
+def draw_sakuraba_bse_panel(parts: list[str], rows: list[dict[str, object]], panel_x: float, panel_y: float,
+                            panel_w: float, panel_h: float, legend_x: float,
+                            panel_label: str | None = None, legend_title: str = 'Accretion history') -> None:
     ymin, ymax = 1.0e-4, 1.0e1
     categories = ['C', 'N', 'H']
+    snapshots = sakuraba_main_snapshots(rows)
+    palette = [
+        '#8c8c8c',
+        '#f39c12',
+        '#e67e22',
+        '#d35400',
+        '#c0392b',
+        '#a93226',
+        '#922b21',
+        '#7b241c',
+        '#641e16',
+        '#4a235a',
+        '#1f77b4',
+    ]
 
-    main_rows = [row for row in rows if float(row['planet_mass_after_earth']) <= 0.995 + 1.0e-12]
-    late_rows = [row for row in rows if float(row['planet_mass_after_earth']) >= 0.995 - 1.0e-12]
-    main_snapshots = unique_rows([nearest_row(main_rows, target) for target in SAKURABA_MAIN_TARGETS])
-    late_snapshots = unique_rows([nearest_row(late_rows, target) for target in SAKURABA_LATE_TARGETS])
+    x_positions = [panel_x + 40 + i * (panel_w - 80) / (len(categories) - 1) for i in range(len(categories))]
+    plot_left = panel_x
+    plot_right = panel_x + panel_w
+    plot_top = panel_y
+    plot_bottom = panel_y + panel_h
 
-    main_palette = ['#8c8c8c', '#bdbdbd', '#f6b26b', '#f39c12', '#c0392b']
-    late_palette = ['#f39c12', '#c0392b']
+    if panel_label:
+        parts.append(text(panel_x - 24, panel_y - 12, panel_label, 'panel'))
+    parts.append(rect(plot_left, plot_top, panel_w, panel_h, 'none', '#333333', 1.2))
+
+    for tick_exp in range(-4, 2):
+        tick_value = 10 ** tick_exp
+        y = map_log10(tick_value, ymin, ymax, plot_bottom, plot_top)
+        parts.append(f'<line x1="{plot_left:.2f}" y1="{y:.2f}" x2="{plot_right:.2f}" y2="{y:.2f}" stroke="#d0d0d0" stroke-width="1"/>')
+        parts.append(text(plot_left - 10, y + 4, f'10^{tick_exp}', 'tick', 'end'))
+
+    for x, label in zip(x_positions, categories):
+        parts.append(f'<line x1="{x:.2f}" y1="{plot_top:.2f}" x2="{x:.2f}" y2="{plot_bottom:.2f}" stroke="#e1e1e1" stroke-width="1"/>')
+        parts.append(text(x, plot_bottom + 24, label, 'label', 'middle'))
+
+    upper_points = []
+    lower_points = []
+    mean_points = []
+    for x, label in zip(x_positions, categories):
+        lo_ppm, hi_ppm = CURRENT_BSE_RANGE_PPM[label]
+        lo_ratio = lo_ppm / CI_MODEL_PPM[label]
+        hi_ratio = hi_ppm / CI_MODEL_PPM[label]
+        mean_ratio = CURRENT_BSE_MEAN_PPM[label] / CI_MODEL_PPM[label]
+        upper_points.append((x, map_log10(hi_ratio, ymin, ymax, plot_bottom, plot_top)))
+        lower_points.append((x, map_log10(lo_ratio, ymin, ymax, plot_bottom, plot_top)))
+        mean_points.append((x, map_log10(mean_ratio, ymin, ymax, plot_bottom, plot_top)))
+    band_polygon = upper_points + list(reversed(lower_points))
+    parts.append(polygon(band_polygon, '#9fe2bf', opacity=0.75))
+    parts.append(polyline(mean_points, '#2e8b57', 2.0, dasharray='6 4'))
+
+    for snapshot, color in zip(snapshots, palette):
+        points = []
+        ratio_map = {
+            'C': float(snapshot['bse_carbon_ppm']) / CI_MODEL_PPM['C'],
+            'N': float(snapshot['bse_nitrogen_ppm']) / CI_MODEL_PPM['N'],
+            'H': float(snapshot['bse_hydrogen_ppm']) / CI_MODEL_PPM['H'],
+        }
+        for x, label in zip(x_positions, categories):
+            y = map_log10(ratio_map[label], ymin, ymax, plot_bottom, plot_top)
+            points.append((x, y))
+        parts.append(polyline(points, color, 2.4))
+        for x, y in points:
+            parts.append(circle(x, y, 4.0, color))
+
+    legend_height = 42 + 18 * len(snapshots)
+    parts.append(text(legend_x, panel_y - 12, legend_title, 'small'))
+    parts.append(rect(legend_x - 12, panel_y, 192, legend_height, '#ffffff', '#cccccc', 1.0, 0.92))
+    base_y = panel_y + 18
+    parts.append(polyline([(legend_x, base_y), (legend_x + 20, base_y)], '#2e8b57', 2.0, dasharray='6 4'))
+    parts.append(text(legend_x + 28, base_y + 4, 'BSE mean', 'small'))
+    parts.append(rect(legend_x + 3, base_y + 12, 14, 10, '#9fe2bf', opacity=0.75))
+    parts.append(text(legend_x + 28, base_y + 22, 'BSE range', 'small'))
+    for idx, (snapshot, color) in enumerate(zip(snapshots, palette), start=2):
+        y = base_y + idx * 18
+        parts.append(polyline([(legend_x, y), (legend_x + 20, y)], color, 2.4))
+        parts.append(circle(legend_x + 10, y, 3.6, color))
+        parts.append(text(legend_x + 28, y + 4, sakuraba_snapshot_label(snapshot), 'small'))
+
+    parts.append(text(plot_left - 60, plot_top + panel_h / 2, 'Abundance / CI chondrites', 'label'))
+
+
+def draw_shi_delta15n_panel(parts: list[str], rows: list[dict[str, object]], left: float, top: float,
+                            right: float, bottom: float, panel_label: str | None = None) -> None:
+    xmin, xmax = 0.01, 1.0
+    ymin, ymax = -35.0, 5.0
+
+    if panel_label:
+        parts.append(text(left - 24, top - 12, panel_label, 'panel'))
+
+    def x_map(value: float) -> float:
+        return map_linear(value, xmin, xmax, left, right)
+
+    def y_map(value: float) -> float:
+        return map_linear(value, ymin, ymax, bottom, top)
+
+    for marker in shi_reference_markers(rows):
+        x = x_map(float(marker['planet_mass_after_earth']))
+        parts.append(f'<line x1="{x:.2f}" y1="{top:.2f}" x2="{x:.2f}" y2="{bottom:.2f}" stroke="#9a9a9a" stroke-width="1.2" stroke-dasharray="5 5"/>')
+
+    parts.append(rect(left, top, right - left, bottom - top, 'none', '#333333', 1.2))
+
+    for tick in [-35, -30, -25, -20, -15, -10, -5, 0, 5]:
+        y = y_map(tick)
+        parts.append(f'<line x1="{left:.2f}" y1="{y:.2f}" x2="{right:.2f}" y2="{y:.2f}" stroke="#d0d0d0" stroke-width="1"/>')
+        parts.append(text(left - 10, y + 4, f'{tick:g}', 'tick', 'end'))
+
+    for tick in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]:
+        x = x_map(tick)
+        parts.append(f'<line x1="{x:.2f}" y1="{top:.2f}" x2="{x:.2f}" y2="{bottom:.2f}" stroke="#e1e1e1" stroke-width="1"/>')
+        parts.append(text(x, bottom + 24, f'{tick:.1f}', 'tick', 'middle'))
+
+    series = [
+        ('Atmosphere', 'atmosphere_delta15n_permil', '#e67e22', '8 5'),
+        ('Mantle', 'mantle_delta15n_permil', '#c0392b', None),
+        ('Core', 'core_delta15n_permil', '#7b241c', '12 4 3 4'),
+    ]
+
+    for label, key, color, dash in series:
+        points = [(x_map(float(row['planet_mass_after_earth'])), y_map(float(row[key]))) for row in rows]
+        parts.append(polyline(points, color, 2.6, dasharray=dash))
+
+    legend_x = left + 25
+    legend_y = top + 25
+    parts.append(rect(legend_x - 12, legend_y - 20, 214, 92, '#ffffff', '#cccccc', 1.0, 0.92))
+    for idx, (label, _key, color, dash) in enumerate(series):
+        y = legend_y + idx * 18
+        parts.append(polyline([(legend_x, y), (legend_x + 26, y)], color, 2.6, dasharray=dash))
+        parts.append(text(legend_x + 36, y + 4, label, 'small'))
+    marker_y = legend_y + 58
+    parts.append(f'<line x1="{legend_x:.2f}" y1="{marker_y:.2f}" x2="{legend_x + 26:.2f}" y2="{marker_y:.2f}" stroke="#9a9a9a" stroke-width="1.2" stroke-dasharray="5 5"/>')
+    parts.append(text(legend_x + 36, marker_y + 4, 'Early end + each GI', 'small'))
+
+    final_row = rows[-1]
+    parts.append(text(right - 10, y_map(float(final_row['atmosphere_delta15n_permil'])) - 8, 'Atmosphere', 'small', 'end'))
+    parts.append(text(right - 10, y_map(float(final_row['mantle_delta15n_permil'])) - 8, 'Mantle', 'small', 'end'))
+    parts.append(text(right - 10, y_map(float(final_row['core_delta15n_permil'])) - 8, 'Core', 'small', 'end'))
+
+    parts.append(text((left + right) / 2, bottom + 52, 'Mass of Earth accreted (M_E)', 'label', 'middle'))
+    parts.append(text(left - 72, (top + bottom) / 2, 'δ15N (‰)', 'label'))
+
+def render_sakuraba_fig2(rows: list[dict[str, object]], output_path: Path) -> None:
+    width = 980
+    height = 640
+    left = 90
+    top = 90
+    panel_w = 360
+    panel_h = 360
+    legend_x = left + panel_w + 48
 
     parts = svg_header(width, height)
     parts.append(text(width / 2, 42, 'Sakuraba et al. (2021) Fig. 2 analogue from MakeEarth.cpp', 'title', 'middle'))
     parts.append(text(width / 2, 64, 'BSE is taken as mantle + atmosphere, normalized by total planetary mass and scaled by CI model abundances.', 'small', 'middle'))
-
-    def draw_panel(panel_x: float, panel_y: float, panel_title: str,
-                   snapshots: list[dict[str, object]], palette: list[str]) -> None:
-        x_positions = [panel_x + 40 + i * (panel_w - 80) / (len(categories) - 1) for i in range(len(categories))]
-        plot_left = panel_x
-        plot_right = panel_x + panel_w
-        plot_top = panel_y
-        plot_bottom = panel_y + panel_h
-
-        parts.append(text(panel_x - 24, panel_y - 12, panel_title, 'panel'))
-        parts.append(rect(plot_left, plot_top, panel_w, panel_h, 'none', '#333333', 1.2))
-
-        for tick_exp in range(-4, 2):
-            tick_value = 10 ** tick_exp
-            y = map_log10(tick_value, ymin, ymax, plot_bottom, plot_top)
-            parts.append(f'<line x1="{plot_left:.2f}" y1="{y:.2f}" x2="{plot_right:.2f}" y2="{y:.2f}" stroke="#d0d0d0" stroke-width="1"/>')
-            parts.append(text(plot_left - 10, y + 4, f'10^{tick_exp}', 'tick', 'end'))
-
-        for x, label in zip(x_positions, categories):
-            parts.append(f'<line x1="{x:.2f}" y1="{plot_top:.2f}" x2="{x:.2f}" y2="{plot_bottom:.2f}" stroke="#e1e1e1" stroke-width="1"/>')
-            parts.append(text(x, plot_bottom + 24, label, 'label', 'middle'))
-
-        upper_points = []
-        lower_points = []
-        mean_points = []
-        for x, label in zip(x_positions, categories):
-            lo_ppm, hi_ppm = CURRENT_BSE_RANGE_PPM[label]
-            lo_ratio = lo_ppm / CI_MODEL_PPM[label]
-            hi_ratio = hi_ppm / CI_MODEL_PPM[label]
-            mean_ratio = CURRENT_BSE_MEAN_PPM[label] / CI_MODEL_PPM[label]
-            upper_points.append((x, map_log10(hi_ratio, ymin, ymax, plot_bottom, plot_top)))
-            lower_points.append((x, map_log10(lo_ratio, ymin, ymax, plot_bottom, plot_top)))
-            mean_points.append((x, map_log10(mean_ratio, ymin, ymax, plot_bottom, plot_top)))
-        band_polygon = upper_points + list(reversed(lower_points))
-        parts.append(polygon(band_polygon, '#9fe2bf', opacity=0.75))
-        parts.append(polyline(mean_points, '#2e8b57', 2.0, dasharray='6 4'))
-
-        for snapshot, color in zip(snapshots, palette):
-            points = []
-            ratio_map = {
-                'C': float(snapshot['bse_carbon_ppm']) / CI_MODEL_PPM['C'],
-                'N': float(snapshot['bse_nitrogen_ppm']) / CI_MODEL_PPM['N'],
-                'H': float(snapshot['bse_hydrogen_ppm']) / CI_MODEL_PPM['H'],
-            }
-            for x, label in zip(x_positions, categories):
-                y = map_log10(ratio_map[label], ymin, ymax, plot_bottom, plot_top)
-                points.append((x, y))
-            parts.append(polyline(points, color, 2.4))
-            for x, y in points:
-                parts.append(circle(x, y, 4.0, color))
-
-        legend_x = plot_right - 150
-        legend_y = plot_bottom - 112
-        parts.append(rect(legend_x - 12, legend_y - 22, 152, 20 + 18 * (len(snapshots) + 2), '#ffffff', '#cccccc', 1.0, 0.92))
-        parts.append(polyline([(legend_x, legend_y), (legend_x + 20, legend_y)], '#2e8b57', 2.0, dasharray='6 4'))
-        parts.append(text(legend_x + 28, legend_y + 4, 'BSE mean', 'small'))
-        parts.append(rect(legend_x + 3, legend_y + 12, 14, 10, '#9fe2bf', opacity=0.75))
-        parts.append(text(legend_x + 28, legend_y + 22, 'BSE range', 'small'))
-        for idx, (snapshot, color) in enumerate(zip(snapshots, palette), start=2):
-            y = legend_y + idx * 18
-            parts.append(polyline([(legend_x, y), (legend_x + 20, y)], color, 2.4))
-            parts.append(circle(legend_x + 10, y, 3.6, color))
-            parts.append(text(legend_x + 28, y + 4, format_mass_label(float(snapshot['planet_mass_after_earth'])), 'small'))
-
-        parts.append(text(plot_left - 60, plot_top + panel_h / 2, 'Abundance / CI chondrites', 'label'))
-
-    draw_panel(left, top + 40, 'a', main_snapshots, main_palette)
-    draw_panel(left + panel_w + gap, top + 40, 'b', late_snapshots, late_palette)
-
-    if len(late_snapshots) < 3:
-        parts.append(text(width / 2, height - 18, 'Late-accretion panel shows only start/end snapshots because the current scenario treats late veneer as a single step.', 'small', 'middle'))
-
+    draw_sakuraba_bse_panel(parts, rows, left, top + 40, panel_w, panel_h, legend_x, panel_label='a', legend_title='Main accretion')
+    parts.append(text(width / 2, height - 18, 'Single-panel view: end of early accretion, each GI event, and the final post-late-veneer composition are all plotted as lines.', 'small', 'middle'))
     output_path.write_text(svg_footer(parts))
 
+
+def render_benchmark_summary(rows: list[dict[str, object]], output_path: Path) -> None:
+    width = 1520
+    height = 640
+    left_panel_x = 90
+    top = 90
+    left_panel_w = 340
+    panel_h = 360
+    left_legend_x = left_panel_x + left_panel_w + 36
+    right_left = 760
+    right_right = 1420
+
+    parts = svg_header(width, height)
+    parts.append(text(width / 2, 42, 'Volatile Benchmark Summary from MakeEarth.cpp', 'title', 'middle'))
+    parts.append(text(width / 2, 64, 'Left: Sakuraba et al. (2021) Fig. 2 analogue. Right: Shi et al. (2022) Fig. 4b analogue.', 'small', 'middle'))
+    draw_sakuraba_bse_panel(parts, rows, left_panel_x, top + 40, left_panel_w, panel_h, left_legend_x, panel_label='a', legend_title='Main accretion')
+    draw_shi_delta15n_panel(parts, rows, right_left, top + 40, right_right, top + 40 + panel_h, panel_label='b')
+    parts.append(text(width / 2, height - 18, 'Vertical dashed lines in the Fig. 4b panel mark the end of early accretion and each GI event.', 'small', 'middle'))
+    output_path.write_text(svg_footer(parts))
 
 def render_shi_fig4b(rows: list[dict[str, object]], output_path: Path) -> None:
     width = 1120
@@ -346,10 +468,12 @@ def main() -> None:
     rows = read_history(history_csv)
     render_sakuraba_fig2(rows, args.out_dir / 'sakuraba_fig2.svg')
     render_shi_fig4b(rows, args.out_dir / 'shi_fig4b.svg')
+    render_benchmark_summary(rows, args.out_dir / 'benchmark_summary.svg')
 
     print(f'history_csv={history_csv}')
     print(f'sakuraba_fig2_svg={args.out_dir / "sakuraba_fig2.svg"}')
     print(f'shi_fig4b_svg={args.out_dir / "shi_fig4b.svg"}')
+    print(f'benchmark_summary_svg={args.out_dir / "benchmark_summary.svg"}')
 
 
 if __name__ == '__main__':
