@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -108,14 +109,26 @@ struct AtmosphereState {
 };
 
 struct MeltPoolState {
+  double target_radius_m = 0.0;
+  double core_radius_m = 0.0;
+  double mantle_thickness_m = 0.0;
+  double combined_body_mass_kg = 0.0;
+  double combined_body_radius_m = 0.0;
+  double impactor_density_kg_m3 = 0.0;
+  double impactor_diameter_m = 0.0;
+  double impact_velocity_m_s = 0.0;
+  double gravity_m_s2 = 0.0;
+  double melt_energy_j_kg = 0.0;
   double target_melt_volume_m3 = 0.0;
   double target_melt_mass_kg = 0.0;
   double impactor_silicate_mass_kg = 0.0;
   double impactor_metal_mass_kg = 0.0;
   double equilibrating_silicate_mass_kg = 0.0;
+  double raw_depth_m = 0.0;
   double depth_m = 0.0;
   double pressure_gpa = 0.0;
   double temperature_k = 0.0;
+  int iteration_count = 0;
 };
 
 struct PlanetState {
@@ -195,6 +208,21 @@ struct Constants {
   double gravitational_constant_si = 6.67430e-11;
   double mantle_density_kg_m3 = 3300.0;
   double core_density_kg_m3 = 8000.0;
+  double melt_scaling_k = 0.42;
+  double melt_scaling_mu = 0.56;
+  double melt_scaling_p_sin = 0.66;
+  double impact_angle_deg = 45.0;
+  double melt_energy_reference_j_kg = 9.0e6;
+  double heat_capacity_j_kg_k = 1300.0;
+  double latent_heat_j_kg = 718.0e3;
+  double preimpact_surface_temperature_k = 1750.0;
+  double liquidus_surface_temperature_k = 1950.0;
+  double liquidus_slope_low_pressure_k_gpa = 28.3;
+  double liquidus_slope_high_pressure_k_gpa = 14.0;
+  double liquidus_slope_break_gpa = 60.0;
+  double geotherm_gradient_k_m = 1.0e-4;
+  double melt_pool_convergence_tolerance_m = 1.0;
+  int melt_pool_max_iterations = 100;
 
   double initial_planet_mass_earth = 0.01;
   double precompute_end_mass_earth = 0.10;
@@ -236,6 +264,14 @@ struct Constants {
 
 [[nodiscard]] double MassFractionToPpm(double mass_fraction) {
   return mass_fraction * 1.0e6;
+}
+
+[[nodiscard]] double Pi() {
+  return std::acos(-1.0);
+}
+
+[[nodiscard]] double DegreesToRadians(double degrees) {
+  return degrees * Pi() / 180.0;
 }
 
 [[nodiscard]] double RadiusFromMassKg(double mass_kg, const Constants& constants) {
@@ -299,6 +335,230 @@ struct Constants {
   const double core_radius_m =
       SphereRadiusFromMassAndDensity(planet.core.mass_kg, constants.core_density_kg_m3);
   return std::max(0.0, planet_radius_m - core_radius_m);
+}
+
+[[nodiscard]] double BulkDensityFromMetalFraction(double metallic_fe_fraction,
+                                                  const Constants& constants) {
+  if (metallic_fe_fraction < 0.0 || metallic_fe_fraction > 1.0) {
+    throw std::runtime_error("BulkDensityFromMetalFraction requires f in [0, 1].");
+  }
+
+  const double metal_volume_per_kg = metallic_fe_fraction / constants.core_density_kg_m3;
+  const double silicate_volume_per_kg =
+      (1.0 - metallic_fe_fraction) / constants.mantle_density_kg_m3;
+  return 1.0 / (metal_volume_per_kg + silicate_volume_per_kg);
+}
+
+[[nodiscard]] double SphereDiameterFromMassAndDensity(double mass_kg,
+                                                      double density_kg_m3) {
+  return 2.0 * SphereRadiusFromMassAndDensity(mass_kg, density_kg_m3);
+}
+
+[[nodiscard]] double PressureGPaFromDepth(double depth_m, double gravity_m_s2,
+                                          double density_kg_m3) {
+  if (depth_m < 0.0) {
+    throw std::runtime_error("PressureGPaFromDepth requires non-negative depth.");
+  }
+  if (gravity_m_s2 < 0.0) {
+    throw std::runtime_error("PressureGPaFromDepth requires non-negative gravity.");
+  }
+  if (density_kg_m3 <= 0.0) {
+    throw std::runtime_error("PressureGPaFromDepth requires positive density.");
+  }
+  return density_kg_m3 * gravity_m_s2 * depth_m * 1.0e-9;
+}
+
+[[nodiscard]] double LiquidusSlopeKPerGPa(double pressure_gpa,
+                                          const Constants& constants) {
+  return pressure_gpa < constants.liquidus_slope_break_gpa
+             ? constants.liquidus_slope_low_pressure_k_gpa
+             : constants.liquidus_slope_high_pressure_k_gpa;
+}
+
+[[nodiscard]] double LiquidusTemperatureK(double pressure_gpa,
+                                          const Constants& constants) {
+  return constants.liquidus_surface_temperature_k +
+         LiquidusSlopeKPerGPa(pressure_gpa, constants) * pressure_gpa;
+}
+
+[[nodiscard]] double EffectiveMeltEnergyJPerKg(double depth_m, double gravity_m_s2,
+                                               const Constants& constants) {
+  const double pressure_gpa =
+      PressureGPaFromDepth(depth_m, gravity_m_s2, constants.mantle_density_kg_m3);
+  const double geotherm_temperature_k =
+      constants.preimpact_surface_temperature_k +
+      constants.geotherm_gradient_k_m * depth_m;
+  const double liquidus_temperature_k = LiquidusTemperatureK(pressure_gpa, constants);
+  const double denominator =
+      constants.heat_capacity_j_kg_k * liquidus_temperature_k +
+      constants.latent_heat_j_kg;
+  if (denominator <= 0.0) {
+    throw std::runtime_error("EffectiveMeltEnergyJPerKg encountered non-positive denominator.");
+  }
+
+  const double melt_energy =
+      constants.melt_energy_reference_j_kg *
+      (1.0 - constants.heat_capacity_j_kg_k * geotherm_temperature_k / denominator);
+  if (melt_energy <= 0.0) {
+    throw std::runtime_error("EffectiveMeltEnergyJPerKg became non-positive.");
+  }
+  return melt_energy;
+}
+
+[[nodiscard]] double MeltVolumeM3(double melt_energy_j_kg,
+                                  double impactor_density_kg_m3,
+                                  double target_density_kg_m3,
+                                  double impactor_diameter_m,
+                                  double impact_velocity_m_s,
+                                  const Constants& constants) {
+  if (melt_energy_j_kg <= 0.0) {
+    throw std::runtime_error("MeltVolumeM3 requires positive melt energy.");
+  }
+  if (impactor_density_kg_m3 <= 0.0 || target_density_kg_m3 <= 0.0) {
+    throw std::runtime_error("MeltVolumeM3 requires positive densities.");
+  }
+  if (impactor_diameter_m <= 0.0 || impact_velocity_m_s <= 0.0) {
+    throw std::runtime_error("MeltVolumeM3 requires positive diameter and velocity.");
+  }
+
+  return (Pi() / 6.0) * constants.melt_scaling_k *
+         std::pow(melt_energy_j_kg, -1.5 * constants.melt_scaling_mu) *
+         (impactor_density_kg_m3 / target_density_kg_m3) *
+         std::pow(impactor_diameter_m, 3.0) *
+         std::pow(impact_velocity_m_s, 3.0 * constants.melt_scaling_mu) *
+         std::pow(std::sin(DegreesToRadians(constants.impact_angle_deg)),
+                  2.0 * constants.melt_scaling_p_sin);
+}
+
+[[nodiscard]] double SphericalCapVolumeM3(double depth_m, double radius_m) {
+  if (radius_m <= 0.0) {
+    throw std::runtime_error("SphericalCapVolumeM3 requires positive radius.");
+  }
+  if (depth_m < 0.0) {
+    throw std::runtime_error("SphericalCapVolumeM3 requires non-negative depth.");
+  }
+
+  return (Pi() / 3.0) * depth_m * depth_m * (3.0 * radius_m - depth_m);
+}
+
+[[nodiscard]] double SolveSphericalCapDepthM(double volume_m3, double radius_m,
+                                             const Constants& constants) {
+  if (volume_m3 < 0.0) {
+    throw std::runtime_error("SolveSphericalCapDepthM requires non-negative volume.");
+  }
+  if (radius_m <= 0.0) {
+    throw std::runtime_error("SolveSphericalCapDepthM requires positive radius.");
+  }
+  if (volume_m3 == 0.0) {
+    return 0.0;
+  }
+
+  const double full_sphere_volume_m3 = (4.0 / 3.0) * Pi() * std::pow(radius_m, 3.0);
+  if (volume_m3 >= full_sphere_volume_m3) {
+    return 2.0 * radius_m;
+  }
+
+  double lower_depth_m = 0.0;
+  double upper_depth_m = 2.0 * radius_m;
+  double depth_m = std::min(
+      upper_depth_m,
+      std::max(constants.melt_pool_convergence_tolerance_m,
+               std::sqrt(volume_m3 / (Pi() * radius_m))));
+
+  for (int iteration = 0; iteration < constants.melt_pool_max_iterations; ++iteration) {
+    const double volume_residual_m3 = SphericalCapVolumeM3(depth_m, radius_m) - volume_m3;
+    if (volume_residual_m3 > 0.0) {
+      upper_depth_m = depth_m;
+    } else {
+      lower_depth_m = depth_m;
+    }
+
+    const double derivative_m2 = Pi() * depth_m * (2.0 * radius_m - depth_m);
+    double next_depth_m = 0.5 * (lower_depth_m + upper_depth_m);
+    if (derivative_m2 > 0.0) {
+      const double newton_depth_m = depth_m - volume_residual_m3 / derivative_m2;
+      if (std::isfinite(newton_depth_m) && newton_depth_m > lower_depth_m &&
+          newton_depth_m < upper_depth_m) {
+        next_depth_m = newton_depth_m;
+      }
+    }
+
+    if (std::fabs(next_depth_m - depth_m) <
+        constants.melt_pool_convergence_tolerance_m) {
+      return next_depth_m;
+    }
+    depth_m = next_depth_m;
+  }
+
+  throw std::runtime_error("SolveSphericalCapDepthM did not converge.");
+}
+
+[[nodiscard]] MeltPoolState ComputeMeltPoolState(const PlanetState& planet,
+                                                 const Impactor& impactor,
+                                                 const Constants& constants) {
+  planet.Validate();
+  impactor.Validate();
+
+  MeltPoolState melt_pool{};
+  melt_pool.target_radius_m = RadiusFromMassKg(planet.total_mass_kg(), constants);
+  melt_pool.core_radius_m = SphereRadiusFromMassAndDensity(
+      planet.core.mass_kg, constants.core_density_kg_m3);
+  melt_pool.mantle_thickness_m = MantleThickness(planet, constants);
+  melt_pool.combined_body_mass_kg = planet.total_mass_kg() + impactor.mass_kg;
+  melt_pool.combined_body_radius_m =
+      RadiusFromMassKg(melt_pool.combined_body_mass_kg, constants);
+  melt_pool.gravity_m_s2 = Gravity(melt_pool.combined_body_mass_kg,
+                                   melt_pool.combined_body_radius_m, constants);
+  melt_pool.impact_velocity_m_s =
+      EscapeVelocity(melt_pool.combined_body_mass_kg,
+                     melt_pool.combined_body_radius_m, constants);
+  melt_pool.impactor_density_kg_m3 =
+      BulkDensityFromMetalFraction(impactor.metallic_fe_fraction, constants);
+  melt_pool.impactor_diameter_m = SphereDiameterFromMassAndDensity(
+      impactor.mass_kg, melt_pool.impactor_density_kg_m3);
+  melt_pool.impactor_silicate_mass_kg =
+      (1.0 - impactor.metallic_fe_fraction) * impactor.mass_kg;
+  melt_pool.impactor_metal_mass_kg =
+      impactor.metallic_fe_fraction * impactor.mass_kg;
+
+  double depth_guess_m = 0.0;
+  for (int iteration = 0; iteration < constants.melt_pool_max_iterations; ++iteration) {
+    const double melt_energy_j_kg =
+        EffectiveMeltEnergyJPerKg(depth_guess_m, melt_pool.gravity_m_s2, constants);
+    const double target_melt_volume_m3 =
+        MeltVolumeM3(melt_energy_j_kg, melt_pool.impactor_density_kg_m3,
+                     constants.mantle_density_kg_m3, melt_pool.impactor_diameter_m,
+                     melt_pool.impact_velocity_m_s, constants);
+    const double next_depth_m = SolveSphericalCapDepthM(
+        target_melt_volume_m3, melt_pool.target_radius_m, constants);
+
+    melt_pool.iteration_count = iteration + 1;
+    melt_pool.melt_energy_j_kg = melt_energy_j_kg;
+    melt_pool.target_melt_volume_m3 = target_melt_volume_m3;
+    melt_pool.raw_depth_m = next_depth_m;
+
+    if (std::fabs(next_depth_m - depth_guess_m) <
+        constants.melt_pool_convergence_tolerance_m) {
+      break;
+    }
+
+    depth_guess_m = next_depth_m;
+    if (iteration == constants.melt_pool_max_iterations - 1) {
+      throw std::runtime_error("ComputeMeltPoolState fixed-point iteration did not converge.");
+    }
+  }
+
+  melt_pool.depth_m =
+      std::min(melt_pool.raw_depth_m, melt_pool.mantle_thickness_m);
+  melt_pool.pressure_gpa = PressureGPaFromDepth(
+      melt_pool.depth_m, melt_pool.gravity_m_s2, constants.mantle_density_kg_m3);
+  melt_pool.temperature_k = LiquidusTemperatureK(melt_pool.pressure_gpa, constants);
+  melt_pool.target_melt_mass_kg =
+      std::min(melt_pool.target_melt_volume_m3 * constants.mantle_density_kg_m3,
+               planet.mantle.mass_kg);
+  melt_pool.equilibrating_silicate_mass_kg =
+      melt_pool.target_melt_mass_kg + melt_pool.impactor_silicate_mass_kg;
+  return melt_pool;
 }
 
 [[nodiscard]] PlanetState MakeInitialPlanetState(const Constants& constants) {
@@ -596,6 +856,27 @@ void PrintScenarioSummary(const Constants& constants, const PlanetState& initial
   }
 }
 
+void PrintMeltPoolSummary(const Impactor& impactor, const MeltPoolState& melt_pool) {
+  std::cout << "melt_pool_demo_impactor=" << impactor.label << '\n';
+  std::cout << "melt_pool_iterations=" << melt_pool.iteration_count << '\n';
+  std::cout << "melt_pool_impactor_density_kg_m3="
+            << melt_pool.impactor_density_kg_m3 << '\n';
+  std::cout << "melt_pool_impactor_diameter_m="
+            << melt_pool.impactor_diameter_m << '\n';
+  std::cout << "melt_pool_impact_velocity_m_s="
+            << melt_pool.impact_velocity_m_s << '\n';
+  std::cout << "melt_pool_target_volume_m3="
+            << melt_pool.target_melt_volume_m3 << '\n';
+  std::cout << "melt_pool_target_mass_kg="
+            << melt_pool.target_melt_mass_kg << '\n';
+  std::cout << "melt_pool_raw_depth_m=" << melt_pool.raw_depth_m << '\n';
+  std::cout << "melt_pool_clamped_depth_m=" << melt_pool.depth_m << '\n';
+  std::cout << "melt_pool_pressure_gpa=" << melt_pool.pressure_gpa << '\n';
+  std::cout << "melt_pool_temperature_k=" << melt_pool.temperature_k << '\n';
+  std::cout << "melt_pool_equilibrating_silicate_mass_kg="
+            << melt_pool.equilibrating_silicate_mass_kg << '\n';
+}
+
 }  // namespace self_oxidation
 
 int main() {
@@ -607,9 +888,13 @@ int main() {
         self_oxidation::MakeInitialPlanetState(constants);
     const std::vector<self_oxidation::Impactor> scenario =
         self_oxidation::BuildScenario(constants);
+    const self_oxidation::MeltPoolState first_melt_pool =
+        self_oxidation::ComputeMeltPoolState(initial_planet, scenario.front(),
+                                             constants);
 
     self_oxidation::PrintInitialSummary(constants, initial_planet);
     self_oxidation::PrintScenarioSummary(constants, initial_planet, scenario);
+    self_oxidation::PrintMeltPoolSummary(scenario.front(), first_melt_pool);
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "error: " << exception.what() << '\n';
