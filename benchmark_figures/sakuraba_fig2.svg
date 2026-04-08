@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="620" viewBox="0 0 1080 620">
+<style>
+text { font-family: Georgia, "Times New Roman", serif; fill: #17202a; }
+.small { font-size: 12px; }
+.tick { font-size: 11px; }
+.label { font-size: 14px; }
+.title { font-size: 20px; font-weight: 600; }
+.panel { font-size: 18px; font-weight: 600; }
+</style>
+<rect width="100%" height="100%" fill="#fffdf8"/>
+<text x="540.00" y="42.00" class="title" text-anchor="middle">Sakuraba et al. (2021) Fig. 2 analogue from MakeEarth.cpp</text>
+<text x="540.00" y="64.00" class="small" text-anchor="middle">BSE is taken as mantle + atmosphere, normalized by total planetary mass and scaled by CI model abundances.</text>
+<text x="66.00" y="118.00" class="panel" text-anchor="start">a</text>
+<rect x="90.00" y="130.00" width="380.00" height="360.00" fill="none" stroke="#333333" stroke-width="1.2" opacity="1.0"/>
+<line x1="90.00" y1="490.00" x2="470.00" y2="490.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="494.00" class="tick" text-anchor="end">10^-4</text>
+<line x1="90.00" y1="418.00" x2="470.00" y2="418.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="422.00" class="tick" text-anchor="end">10^-3</text>
+<line x1="90.00" y1="346.00" x2="470.00" y2="346.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="350.00" class="tick" text-anchor="end">10^-2</text>
+<line x1="90.00" y1="274.00" x2="470.00" y2="274.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="278.00" class="tick" text-anchor="end">10^-1</text>
+<line x1="90.00" y1="202.00" x2="470.00" y2="202.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="206.00" class="tick" text-anchor="end">10^0</text>
+<line x1="90.00" y1="130.00" x2="470.00" y2="130.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="80.00" y="134.00" class="tick" text-anchor="end">10^1</text>
+<line x1="130.00" y1="130.00" x2="130.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="130.00" y="514.00" class="label" text-anchor="middle">C</text>
+<line x1="280.00" y1="130.00" x2="280.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="280.00" y="514.00" class="label" text-anchor="middle">N</text>
+<line x1="430.00" y1="130.00" x2="430.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="430.00" y="514.00" class="label" text-anchor="middle">H</text>
+<polygon points="130.00,323.01 280.00,402.03 430.00,287.37 430.00,360.07 280.00,436.50 130.00,412.30" fill="#9fe2bf" opacity="0.75" stroke="none" stroke-width="1.0"/>
+<polyline points="130.00,342.94 280.00,414.74 430.00,306.12" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
+<polyline points="130.00,374.63 280.00,356.15 430.00,397.27" fill="none" stroke="#8c8c8c" stroke-width="2.4"/>
+<circle cx="130.00" cy="374.63" r="4.00" fill="#8c8c8c" stroke="none"/>
+<circle cx="280.00" cy="356.15" r="4.00" fill="#8c8c8c" stroke="none"/>
+<circle cx="430.00" cy="397.27" r="4.00" fill="#8c8c8c" stroke="none"/>
+<polyline points="130.00,349.58 280.00,401.43 430.00,421.61" fill="none" stroke="#bdbdbd" stroke-width="2.4"/>
+<circle cx="130.00" cy="349.58" r="4.00" fill="#bdbdbd" stroke="none"/>
+<circle cx="280.00" cy="401.43" r="4.00" fill="#bdbdbd" stroke="none"/>
+<circle cx="430.00" cy="421.61" r="4.00" fill="#bdbdbd" stroke="none"/>
+<polyline points="130.00,342.53 280.00,410.17 430.00,418.45" fill="none" stroke="#f6b26b" stroke-width="2.4"/>
+<circle cx="130.00" cy="342.53" r="4.00" fill="#f6b26b" stroke="none"/>
+<circle cx="280.00" cy="410.17" r="4.00" fill="#f6b26b" stroke="none"/>
+<circle cx="430.00" cy="418.45" r="4.00" fill="#f6b26b" stroke="none"/>
+<polyline points="130.00,339.30 280.00,416.74 430.00,415.98" fill="none" stroke="#f39c12" stroke-width="2.4"/>
+<circle cx="130.00" cy="339.30" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="280.00" cy="416.74" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="430.00" cy="415.98" r="4.00" fill="#f39c12" stroke="none"/>
+<polyline points="130.00,272.84 280.00,310.81 430.00,334.30" fill="none" stroke="#c0392b" stroke-width="2.4"/>
+<circle cx="130.00" cy="272.84" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="280.00" cy="310.81" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="430.00" cy="334.30" r="4.00" fill="#c0392b" stroke="none"/>
+<rect x="308.00" y="356.00" width="152.00" height="146.00" fill="#ffffff" stroke="#cccccc" stroke-width="1.0" opacity="0.92"/>
+<polyline points="320.00,378.00 340.00,378.00" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
+<text x="348.00" y="382.00" class="small" text-anchor="start">BSE mean</text>
+<rect x="323.00" y="390.00" width="14.00" height="10.00" fill="#9fe2bf" stroke="none" stroke-width="1.0" opacity="0.75"/>
+<text x="348.00" y="400.00" class="small" text-anchor="start">BSE range</text>
+<polyline points="320.00,414.00 340.00,414.00" fill="none" stroke="#8c8c8c" stroke-width="2.4"/>
+<circle cx="330.00" cy="414.00" r="3.60" fill="#8c8c8c" stroke="none"/>
+<text x="348.00" y="418.00" class="small" text-anchor="start">10.0 wt%</text>
+<polyline points="320.00,432.00 340.00,432.00" fill="none" stroke="#bdbdbd" stroke-width="2.4"/>
+<circle cx="330.00" cy="432.00" r="3.60" fill="#bdbdbd" stroke="none"/>
+<text x="348.00" y="436.00" class="small" text-anchor="start">30.0 wt%</text>
+<polyline points="320.00,450.00 340.00,450.00" fill="none" stroke="#f6b26b" stroke-width="2.4"/>
+<circle cx="330.00" cy="450.00" r="3.60" fill="#f6b26b" stroke="none"/>
+<text x="348.00" y="454.00" class="small" text-anchor="start">50.0 wt%</text>
+<polyline points="320.00,468.00 340.00,468.00" fill="none" stroke="#f39c12" stroke-width="2.4"/>
+<circle cx="330.00" cy="468.00" r="3.60" fill="#f39c12" stroke="none"/>
+<text x="348.00" y="472.00" class="small" text-anchor="start">70.0 wt%</text>
+<polyline points="320.00,486.00 340.00,486.00" fill="none" stroke="#c0392b" stroke-width="2.4"/>
+<circle cx="330.00" cy="486.00" r="3.60" fill="#c0392b" stroke="none"/>
+<text x="348.00" y="490.00" class="small" text-anchor="start">99.5 wt%</text>
+<text x="30.00" y="310.00" class="label" text-anchor="start">Abundance / CI chondrites</text>
+<text x="566.00" y="118.00" class="panel" text-anchor="start">b</text>
+<rect x="590.00" y="130.00" width="380.00" height="360.00" fill="none" stroke="#333333" stroke-width="1.2" opacity="1.0"/>
+<line x1="590.00" y1="490.00" x2="970.00" y2="490.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="494.00" class="tick" text-anchor="end">10^-4</text>
+<line x1="590.00" y1="418.00" x2="970.00" y2="418.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="422.00" class="tick" text-anchor="end">10^-3</text>
+<line x1="590.00" y1="346.00" x2="970.00" y2="346.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="350.00" class="tick" text-anchor="end">10^-2</text>
+<line x1="590.00" y1="274.00" x2="970.00" y2="274.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="278.00" class="tick" text-anchor="end">10^-1</text>
+<line x1="590.00" y1="202.00" x2="970.00" y2="202.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="206.00" class="tick" text-anchor="end">10^0</text>
+<line x1="590.00" y1="130.00" x2="970.00" y2="130.00" stroke="#d0d0d0" stroke-width="1"/>
+<text x="580.00" y="134.00" class="tick" text-anchor="end">10^1</text>
+<line x1="630.00" y1="130.00" x2="630.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="630.00" y="514.00" class="label" text-anchor="middle">C</text>
+<line x1="780.00" y1="130.00" x2="780.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="780.00" y="514.00" class="label" text-anchor="middle">N</text>
+<line x1="930.00" y1="130.00" x2="930.00" y2="490.00" stroke="#e1e1e1" stroke-width="1"/>
+<text x="930.00" y="514.00" class="label" text-anchor="middle">H</text>
+<polygon points="630.00,323.01 780.00,402.03 930.00,287.37 930.00,360.07 780.00,436.50 630.00,412.30" fill="#9fe2bf" opacity="0.75" stroke="none" stroke-width="1.0"/>
+<polyline points="630.00,342.94 780.00,414.74 930.00,306.12" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
+<polyline points="630.00,272.84 780.00,310.81 930.00,334.30" fill="none" stroke="#f39c12" stroke-width="2.4"/>
+<circle cx="630.00" cy="272.84" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="780.00" cy="310.81" r="4.00" fill="#f39c12" stroke="none"/>
+<circle cx="930.00" cy="334.30" r="4.00" fill="#f39c12" stroke="none"/>
+<polyline points="630.00,282.43 780.00,323.51 930.00,335.40" fill="none" stroke="#c0392b" stroke-width="2.4"/>
+<circle cx="630.00" cy="282.43" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="780.00" cy="323.51" r="4.00" fill="#c0392b" stroke="none"/>
+<circle cx="930.00" cy="335.40" r="4.00" fill="#c0392b" stroke="none"/>
+<rect x="808.00" y="356.00" width="152.00" height="92.00" fill="#ffffff" stroke="#cccccc" stroke-width="1.0" opacity="0.92"/>
+<polyline points="820.00,378.00 840.00,378.00" fill="none" stroke="#2e8b57" stroke-width="2.0" stroke-dasharray="6 4"/>
+<text x="848.00" y="382.00" class="small" text-anchor="start">BSE mean</text>
+<rect x="823.00" y="390.00" width="14.00" height="10.00" fill="#9fe2bf" stroke="none" stroke-width="1.0" opacity="0.75"/>
+<text x="848.00" y="400.00" class="small" text-anchor="start">BSE range</text>
+<polyline points="820.00,414.00 840.00,414.00" fill="none" stroke="#f39c12" stroke-width="2.4"/>
+<circle cx="830.00" cy="414.00" r="3.60" fill="#f39c12" stroke="none"/>
+<text x="848.00" y="418.00" class="small" text-anchor="start">99.5 wt%</text>
+<polyline points="820.00,432.00 840.00,432.00" fill="none" stroke="#c0392b" stroke-width="2.4"/>
+<circle cx="830.00" cy="432.00" r="3.60" fill="#c0392b" stroke="none"/>
+<text x="848.00" y="436.00" class="small" text-anchor="start">full accreted</text>
+<text x="530.00" y="310.00" class="label" text-anchor="start">Abundance / CI chondrites</text>
+<text x="540.00" y="602.00" class="small" text-anchor="middle">Late-accretion panel shows only start/end snapshots because the current scenario treats late veneer as a single step.</text>
+</svg>

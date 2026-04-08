@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -45,6 +46,12 @@ enum class InventorySource {
   kCiBulk,
   kPrecomputeOutputAt0p10EarthMass,
   kPrecomputeCoreAt0p10EarthMass,
+};
+
+enum class RedoxSource {
+  kImpactorValue,
+  kPrecomputeOutputAt0p10EarthMass,
+  kCurrentTargetMantle,
 };
 
 enum class ErosionSizeDistribution {
@@ -182,13 +189,17 @@ struct Impactor {
   double mass_kg = 0.0;
   double metallic_fe_fraction = 0.325;
   bool is_differentiated = false;
-  InventorySource silicate_inventory_source = InventorySource::kEcBulk;
+  InventorySource bulk_inventory_source = InventorySource::kNone;
+  InventorySource silicate_inventory_source = InventorySource::kNone;
   InventorySource metal_inventory_source = InventorySource::kNone;
+  InventorySource alloy_source = InventorySource::kNone;
+  ElementPpm bulk_volatiles_ppm{};
   ElementPpm silicate_volatiles_ppm{};
   ElementPpm metal_volatiles_ppm{};
   double delta15n_silicate_permil = 0.0;
   double delta15n_metal_permil = 0.0;
   AlloyComposition alloy{};
+  RedoxSource redox_source = RedoxSource::kImpactorValue;
   RedoxState redox{};
 
   void Validate() const {
@@ -200,6 +211,15 @@ struct Impactor {
     }
     if (metallic_fe_fraction < 0.0 || metallic_fe_fraction > 1.0) {
       throw std::runtime_error("Impactor metallic_fe_fraction must be in [0, 1].");
+    }
+    const bool has_bulk_inventory =
+        bulk_inventory_source != InventorySource::kNone;
+    const bool has_phase_resolved_inventory =
+        silicate_inventory_source != InventorySource::kNone ||
+        metal_inventory_source != InventorySource::kNone;
+    if (has_bulk_inventory && has_phase_resolved_inventory) {
+      throw std::runtime_error(
+          "Impactor cannot mix bulk and phase-resolved volatile inventories.");
     }
     alloy.Validate();
     redox.Validate();
@@ -227,6 +247,32 @@ struct StepResult {
   ElementMassKg conservation_error_kg{};
 };
 
+struct HistoryRecord {
+  std::size_t step_index = 0;
+  std::string label;
+  GrowthPhase phase = GrowthPhase::kPrecomputeAccretion;
+  ImpactorClass impactor_class = ImpactorClass::kECLikeUndifferentiated;
+  double planet_mass_before_earth = 0.0;
+  double planet_mass_after_earth = 0.0;
+  double mantle_mass_after_earth = 0.0;
+  double core_mass_after_earth = 0.0;
+  double bse_carbon_ppm = 0.0;
+  double bse_hydrogen_ppm = 0.0;
+  double bse_nitrogen_ppm = 0.0;
+  double mantle_carbon_ppm = 0.0;
+  double mantle_hydrogen_ppm = 0.0;
+  double mantle_nitrogen_ppm = 0.0;
+  double core_carbon_ppm = 0.0;
+  double core_hydrogen_ppm = 0.0;
+  double core_nitrogen_ppm = 0.0;
+  double atmosphere_carbon_ppm_silicate_earth = 0.0;
+  double atmosphere_hydrogen_ppm_silicate_earth = 0.0;
+  double atmosphere_nitrogen_ppm_silicate_earth = 0.0;
+  double mantle_delta15n_permil = 0.0;
+  double core_delta15n_permil = 0.0;
+  double atmosphere_delta15n_permil = 0.0;
+};
+
 struct DifferentiatedImpactorSnapshot {
   ElementPpm silicate_volatiles_ppm{};
   ElementPpm metal_volatiles_ppm{};
@@ -241,6 +287,7 @@ struct SimplifiedRunResult {
   std::size_t completed_steps = 0;
   bool has_precompute_snapshot = false;
   DifferentiatedImpactorSnapshot precompute_snapshot{};
+  std::vector<HistoryRecord> history{};
   ElementMassKg cumulative_eroded_kg{};
   ElementMassKg max_abs_conservation_error_kg{};
   StepResult first_step{};
@@ -251,6 +298,11 @@ struct ElementPartitionKg {
   double atmosphere_kg = 0.0;
   double silicate_kg = 0.0;
   double metal_kg = 0.0;
+};
+
+struct ImpactorVolatileMassesKg {
+  ElementMassKg silicate_kg{};
+  ElementMassKg metal_kg{};
 };
 
 struct Step2EquilibriumState {
@@ -428,6 +480,73 @@ struct Constants {
       MassFractionToPpm(element_masses_kg.hydrogen_kg / host_mass_kg),
       MassFractionToPpm(element_masses_kg.nitrogen_kg / host_mass_kg),
   };
+}
+
+[[nodiscard]] ElementMassKg ComputeMantleVolatileMassKg(const PlanetState& planet) {
+  return PpmToElementMassKg(planet.mantle.volatiles_ppm, planet.mantle.mass_kg);
+}
+
+[[nodiscard]] ElementMassKg ComputeCoreVolatileMassKg(const PlanetState& planet) {
+  return PpmToElementMassKg(planet.core.volatiles_ppm, planet.core.mass_kg);
+}
+
+[[nodiscard]] ElementMassKg ComputeBseVolatileMassKg(const PlanetState& planet) {
+  const ElementMassKg mantle = ComputeMantleVolatileMassKg(planet);
+  return {
+      mantle.carbon_kg + planet.atmosphere.elements_kg.carbon_kg,
+      mantle.hydrogen_kg + planet.atmosphere.elements_kg.hydrogen_kg,
+      mantle.nitrogen_kg + planet.atmosphere.elements_kg.nitrogen_kg,
+  };
+}
+
+[[nodiscard]] ElementPpm ComputeBseVolatilesPpmPerPlanetMass(
+    const PlanetState& planet) {
+  return ElementMassKgToPpm(ComputeBseVolatileMassKg(planet), planet.total_mass_kg());
+}
+
+[[nodiscard]] ElementPpm ComputeAtmosphereVolatilesPpmPerSilicateEarth(
+    const PlanetState& planet) {
+  return ElementMassKgToPpm(planet.atmosphere.elements_kg, planet.mantle.mass_kg);
+}
+
+[[nodiscard]] HistoryRecord CaptureHistoryRecord(const std::size_t index,
+                                                 const PlanetState& planet_before,
+                                                 const StepResult& step_result,
+                                                 const Constants& constants) {
+  const PlanetState& planet_after = step_result.planet_after;
+  const ElementPpm bse_ppm = ComputeBseVolatilesPpmPerPlanetMass(planet_after);
+  const ElementPpm atmosphere_ppm =
+      ComputeAtmosphereVolatilesPpmPerSilicateEarth(planet_after);
+
+  HistoryRecord record{};
+  record.step_index = index;
+  record.label = step_result.resolved_impactor.label;
+  record.phase = step_result.resolved_impactor.phase;
+  record.impactor_class = step_result.resolved_impactor.impactor_class;
+  record.planet_mass_before_earth =
+      KgToEarthMass(planet_before.total_mass_kg(), constants);
+  record.planet_mass_after_earth =
+      KgToEarthMass(planet_after.total_mass_kg(), constants);
+  record.mantle_mass_after_earth =
+      KgToEarthMass(planet_after.mantle.mass_kg, constants);
+  record.core_mass_after_earth =
+      KgToEarthMass(planet_after.core.mass_kg, constants);
+  record.bse_carbon_ppm = bse_ppm.carbon_ppm;
+  record.bse_hydrogen_ppm = bse_ppm.hydrogen_ppm;
+  record.bse_nitrogen_ppm = bse_ppm.nitrogen_ppm;
+  record.mantle_carbon_ppm = planet_after.mantle.volatiles_ppm.carbon_ppm;
+  record.mantle_hydrogen_ppm = planet_after.mantle.volatiles_ppm.hydrogen_ppm;
+  record.mantle_nitrogen_ppm = planet_after.mantle.volatiles_ppm.nitrogen_ppm;
+  record.core_carbon_ppm = planet_after.core.volatiles_ppm.carbon_ppm;
+  record.core_hydrogen_ppm = planet_after.core.volatiles_ppm.hydrogen_ppm;
+  record.core_nitrogen_ppm = planet_after.core.volatiles_ppm.nitrogen_ppm;
+  record.atmosphere_carbon_ppm_silicate_earth = atmosphere_ppm.carbon_ppm;
+  record.atmosphere_hydrogen_ppm_silicate_earth = atmosphere_ppm.hydrogen_ppm;
+  record.atmosphere_nitrogen_ppm_silicate_earth = atmosphere_ppm.nitrogen_ppm;
+  record.mantle_delta15n_permil = planet_after.mantle.delta15n_permil;
+  record.core_delta15n_permil = planet_after.core.delta15n_permil;
+  record.atmosphere_delta15n_permil = planet_after.atmosphere.delta15n_permil;
+  return record;
 }
 
 [[nodiscard]] ElementMassKg AddElementMassKg(const ElementMassKg& left,
@@ -625,8 +744,11 @@ struct Constants {
   const double fixed_minor_sum =
       reference_alloy.x_s + reference_alloy.x_ni + reference_alloy.x_si;
   const double max_x_c = std::max(0.0, 1.0 - fixed_minor_sum - 1.0e-12);
-  const double carbon_mass_fraction =
-      std::clamp(PpmToMassFraction(core_carbon_ppm), 0.0, 0.20);
+  const double carbon_mass_fraction = PpmToMassFraction(core_carbon_ppm);
+  if (carbon_mass_fraction < 0.0 || carbon_mass_fraction > 1.0) {
+    throw std::runtime_error(
+        "Precompute core carbon ppm implies an invalid carbon mass fraction.");
+  }
 
   const double non_carbon_molar_mass =
       reference_alloy.x_s * kAtomicMassSulfur +
@@ -641,9 +763,15 @@ struct Constants {
         "Carbon mole-fraction denominator became non-positive.");
   }
 
+  const double raw_x_c =
+      carbon_mass_fraction * non_carbon_molar_mass / denominator;
+  if (raw_x_c < 0.0 || raw_x_c > max_x_c) {
+    throw std::runtime_error(
+        "Precompute core carbon ppm implies an invalid x_C^metal.");
+  }
+
   AlloyComposition updated = reference_alloy;
-  updated.x_c = std::clamp(
-      carbon_mass_fraction * non_carbon_molar_mass / denominator, 0.0, max_x_c);
+  updated.x_c = raw_x_c;
   updated.Validate();
   return updated;
 }
@@ -1549,6 +1677,10 @@ template <typename Func>
 [[nodiscard]] ElementMassKg ComputeImpactorBulkElementMassKg(
     const Impactor& impactor) {
   impactor.Validate();
+  if (impactor.bulk_inventory_source != InventorySource::kNone) {
+    return PpmToElementMassKg(impactor.bulk_volatiles_ppm, impactor.mass_kg);
+  }
+
   const double impactor_silicate_mass_kg =
       (1.0 - impactor.metallic_fe_fraction) * impactor.mass_kg;
   const double impactor_metal_mass_kg =
@@ -1556,6 +1688,22 @@ template <typename Func>
   return AddElementMassKg(
       PpmToElementMassKg(impactor.silicate_volatiles_ppm, impactor_silicate_mass_kg),
       PpmToElementMassKg(impactor.metal_volatiles_ppm, impactor_metal_mass_kg));
+}
+
+[[nodiscard]] ImpactorVolatileMassesKg ComputeImpactorEquilibratingVolatileMassesKg(
+    const Impactor& impactor, double impactor_silicate_mass_kg,
+    double impactor_metal_mass_kg) {
+  impactor.Validate();
+  if (impactor.bulk_inventory_source != InventorySource::kNone) {
+    return {
+        PpmToElementMassKg(impactor.bulk_volatiles_ppm, impactor.mass_kg),
+        {},
+    };
+  }
+  return {
+      PpmToElementMassKg(impactor.silicate_volatiles_ppm, impactor_silicate_mass_kg),
+      PpmToElementMassKg(impactor.metal_volatiles_ppm, impactor_metal_mass_kg),
+  };
 }
 
 [[nodiscard]] ElementMassKg ComputeImpactorBulkElementMassFractions(
@@ -1832,17 +1980,42 @@ template <typename Func>
   return outcome;
 }
 
+struct AtmosphereHostGeometry {
+  double host_mass_kg = 0.0;
+  double radius_m = 0.0;
+  double surface_gravity_m_s2 = 0.0;
+};
+
+[[nodiscard]] AtmosphereHostGeometry ComputeAtmosphereHostGeometry(
+    const PlanetState& planet_before, const Impactor& impactor,
+    const Constants& constants) {
+  const double host_mass_kg = impactor.phase == GrowthPhase::kGiantImpact
+                                  ? planet_before.total_mass_kg() + impactor.mass_kg
+                                  : planet_before.total_mass_kg();
+  if (!(host_mass_kg > 0.0)) {
+    return {};
+  }
+  const double radius_m = RadiusFromMassKg(host_mass_kg, constants);
+  return {
+      host_mass_kg,
+      radius_m,
+      Gravity(host_mass_kg, radius_m, constants),
+  };
+}
+
 [[nodiscard]] AtmosphericErosionOutcome ComputeGiantImpactAtmosphericErosion(
     const PlanetState& planet_before, const AtmosphereState& atmosphere_before_erosion,
-    const Impactor& impactor) {
+    const Impactor& impactor, const Constants& constants) {
   planet_before.Validate();
   impactor.Validate();
   AtmosphericErosionOutcome outcome{};
-  if (!(planet_before.total_mass_kg() > 0.0)) {
+  const AtmosphereHostGeometry geometry =
+      ComputeAtmosphereHostGeometry(planet_before, impactor, constants);
+  if (!(geometry.host_mass_kg > 0.0)) {
     return outcome;
   }
 
-  const double mass_ratio = impactor.mass_kg / planet_before.total_mass_kg();
+  const double mass_ratio = impactor.mass_kg / geometry.host_mass_kg;
   const double erosion_fraction = std::clamp(
       0.4 * mass_ratio + 1.4 * mass_ratio * mass_ratio -
           0.8 * mass_ratio * mass_ratio * mass_ratio,
@@ -1858,13 +2031,29 @@ template <typename Func>
 
 [[nodiscard]] Impactor ResolveImpactorForStep(
     const Impactor& impactor,
-    const std::optional<DifferentiatedImpactorSnapshot>& precompute_snapshot) {
+    const std::optional<DifferentiatedImpactorSnapshot>& precompute_snapshot,
+    const RedoxState& target_redox) {
   Impactor resolved = impactor;
+
+  switch (resolved.bulk_inventory_source) {
+    case InventorySource::kNone:
+      resolved.bulk_volatiles_ppm = {};
+      break;
+    case InventorySource::kEcBulk:
+    case InventorySource::kCiBulk:
+      break;
+    case InventorySource::kPrecomputeOutputAt0p10EarthMass:
+    case InventorySource::kPrecomputeCoreAt0p10EarthMass:
+      throw std::runtime_error(
+          "Bulk inventory source cannot use precompute-resolved phase snapshots.");
+  }
 
   switch (resolved.silicate_inventory_source) {
     case InventorySource::kNone:
       resolved.silicate_volatiles_ppm = {};
-      resolved.delta15n_silicate_permil = 0.0;
+      if (resolved.bulk_inventory_source == InventorySource::kNone) {
+        resolved.delta15n_silicate_permil = 0.0;
+      }
       break;
     case InventorySource::kEcBulk:
     case InventorySource::kCiBulk:
@@ -1876,7 +2065,6 @@ template <typename Func>
       resolved.silicate_volatiles_ppm = precompute_snapshot->silicate_volatiles_ppm;
       resolved.delta15n_silicate_permil =
           precompute_snapshot->delta15n_silicate_permil;
-      resolved.redox = precompute_snapshot->redox;
       break;
     case InventorySource::kPrecomputeCoreAt0p10EarthMass:
       throw std::runtime_error(
@@ -1897,15 +2085,40 @@ template <typename Func>
       }
       resolved.metal_volatiles_ppm = precompute_snapshot->metal_volatiles_ppm;
       resolved.delta15n_metal_permil = precompute_snapshot->delta15n_metal_permil;
-      resolved.alloy = precompute_snapshot->alloy;
       break;
     case InventorySource::kPrecomputeOutputAt0p10EarthMass:
       throw std::runtime_error(
           "Metal inventory source cannot be precompute silicate snapshot.");
   }
 
-  if (resolved.is_differentiated && precompute_snapshot.has_value()) {
-    resolved.redox = precompute_snapshot->redox;
+  switch (resolved.alloy_source) {
+    case InventorySource::kNone:
+      break;
+    case InventorySource::kPrecomputeCoreAt0p10EarthMass:
+      if (!precompute_snapshot.has_value()) {
+        throw std::runtime_error("Impactor requires precompute alloy snapshot.");
+      }
+      resolved.alloy = precompute_snapshot->alloy;
+      break;
+    case InventorySource::kEcBulk:
+    case InventorySource::kCiBulk:
+    case InventorySource::kPrecomputeOutputAt0p10EarthMass:
+      throw std::runtime_error(
+          "Alloy source cannot be bulk inventory or precompute silicate snapshot.");
+  }
+
+  switch (resolved.redox_source) {
+    case RedoxSource::kImpactorValue:
+      break;
+    case RedoxSource::kPrecomputeOutputAt0p10EarthMass:
+      if (!precompute_snapshot.has_value()) {
+        throw std::runtime_error("Impactor requires precompute redox snapshot.");
+      }
+      resolved.redox = precompute_snapshot->redox;
+      break;
+    case RedoxSource::kCurrentTargetMantle:
+      resolved.redox = target_redox;
+      break;
   }
 
   resolved.Validate();
@@ -2371,12 +2584,14 @@ template <typename Func>
   const ElementMassKg target_unmelted_volatiles_kg =
       PpmToElementMassKg(planet_before.mantle.volatiles_ppm,
                          std::max(0.0, target_unmelted_mantle_mass_kg));
+  const ImpactorVolatileMassesKg impactor_equilibrating_volatiles_kg =
+      ComputeImpactorEquilibratingVolatileMassesKg(
+          resolved_impactor, result.melt_pool.impactor_silicate_mass_kg,
+          result.melt_pool.impactor_metal_mass_kg);
   const ElementMassKg impactor_silicate_volatiles_kg =
-      PpmToElementMassKg(resolved_impactor.silicate_volatiles_ppm,
-                         result.melt_pool.impactor_silicate_mass_kg);
+      impactor_equilibrating_volatiles_kg.silicate_kg;
   const ElementMassKg impactor_metal_volatiles_kg =
-      PpmToElementMassKg(resolved_impactor.metal_volatiles_ppm,
-                         result.melt_pool.impactor_metal_mass_kg);
+      impactor_equilibrating_volatiles_kg.metal_kg;
 
   const ElementMassKg mixed_silicate_volatiles_kg = AddElementMassKg(
       target_melt_volatiles_kg, impactor_silicate_volatiles_kg);
@@ -2410,18 +2625,16 @@ template <typename Func>
           mixed_silicate_volatiles_kg.nitrogen_kg +
           impactor_metal_volatiles_kg.nitrogen_kg,
   };
-  const double partition_planet_radius_m =
-      RadiusFromMassKg(planet_before.total_mass_kg(), constants);
-  const double partition_surface_gravity_m_s2 =
-      Gravity(planet_before.total_mass_kg(), partition_planet_radius_m, constants);
+  const AtmosphereHostGeometry partition_geometry =
+      ComputeAtmosphereHostGeometry(planet_before, resolved_impactor, constants);
   const Step2EquilibriumState step2_equilibrium =
       SolveThreePhaseVolatileEquilibrium(
           total_equilibrating_volatiles_kg, equilibrium_species_state,
           result.melt_pool.equilibrating_silicate_mass_kg,
           result.melt_pool.impactor_metal_mass_kg, result.dc_metal_silicate,
           result.dh_metal_silicate, result.dn_metal_silicate,
-          result.melt_pool.temperature_k, partition_surface_gravity_m_s2,
-          partition_planet_radius_m, constants);
+          result.melt_pool.temperature_k, partition_geometry.surface_gravity_m_s2,
+          partition_geometry.radius_m, constants);
 
   const ElementPartitionKg carbon_partition = step2_equilibrium.carbon;
   const ElementPartitionKg hydrogen_partition = step2_equilibrium.hydrogen;
@@ -2536,7 +2749,7 @@ template <typename Func>
       break;
     case GrowthPhase::kGiantImpact:
       erosion_outcome = ComputeGiantImpactAtmosphericErosion(
-          planet_before, planet_after.atmosphere, resolved_impactor);
+          planet_before, planet_after.atmosphere, resolved_impactor, constants);
       break;
     case GrowthPhase::kLateVeneer:
       erosion_outcome = ComputeAccretionPhaseAtmosphericErosion(
@@ -2576,8 +2789,8 @@ template <typename Func>
   AlloyComposition current_precompute_alloy = constants.representative_ec_alloy;
 
   for (std::size_t index = 0; index < scenario.size(); ++index) {
-    Impactor resolved_impactor =
-        ResolveImpactorForStep(scenario.at(index), precompute_snapshot);
+    Impactor resolved_impactor = ResolveImpactorForStep(
+        scenario.at(index), precompute_snapshot, current_planet.redox);
     if (resolved_impactor.phase == GrowthPhase::kPrecomputeAccretion) {
       resolved_impactor.alloy = current_precompute_alloy;
     }
@@ -2593,6 +2806,8 @@ template <typename Func>
         AddElementMassKg(run.cumulative_eroded_kg, step_result.eroded_volatiles_kg);
     run.max_abs_conservation_error_kg = MaxAbsElementMassKg(
         run.max_abs_conservation_error_kg, step_result.conservation_error_kg);
+    run.history.push_back(
+        CaptureHistoryRecord(index, current_planet, step_result, constants));
     current_planet = step_result.planet_after;
 
     if (scenario.at(index).phase == GrowthPhase::kPrecomputeAccretion) {
@@ -2699,6 +2914,18 @@ template <typename Func>
   throw std::runtime_error("Unknown InventorySource.");
 }
 
+[[nodiscard]] std::string ToString(RedoxSource redox_source) {
+  switch (redox_source) {
+    case RedoxSource::kImpactorValue:
+      return "impactor_value";
+    case RedoxSource::kPrecomputeOutputAt0p10EarthMass:
+      return "precompute_output_at_0p10";
+    case RedoxSource::kCurrentTargetMantle:
+      return "current_target_mantle";
+  }
+  throw std::runtime_error("Unknown RedoxSource.");
+}
+
 [[nodiscard]] std::string ZeroPadded(std::size_t value, int width) {
   std::ostringstream stream;
   stream << std::setw(width) << std::setfill('0') << value;
@@ -2736,13 +2963,17 @@ template <typename Func>
   impactor.mass_kg = EarthMassToKg(constants.precompute_step_mass_earth, constants);
   impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
   impactor.is_differentiated = false;
-  impactor.silicate_inventory_source = InventorySource::kEcBulk;
+  impactor.bulk_inventory_source = InventorySource::kEcBulk;
+  impactor.silicate_inventory_source = InventorySource::kNone;
   impactor.metal_inventory_source = InventorySource::kNone;
-  impactor.silicate_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.alloy_source = InventorySource::kNone;
+  impactor.bulk_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.silicate_volatiles_ppm = {};
   impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
   impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   impactor.alloy = constants.representative_ec_alloy;
+  impactor.redox_source = RedoxSource::kImpactorValue;
   impactor.Validate();
   return impactor;
 }
@@ -2757,14 +2988,18 @@ template <typename Func>
   impactor.mass_kg = EarthMassToKg(impactor_mass_earth, constants);
   impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
   impactor.is_differentiated = true;
+  impactor.bulk_inventory_source = InventorySource::kNone;
   impactor.silicate_inventory_source =
       InventorySource::kPrecomputeOutputAt0p10EarthMass;
   impactor.metal_inventory_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
+  impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
+  impactor.bulk_volatiles_ppm = {};
   impactor.silicate_volatiles_ppm = {};
   impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
   impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   impactor.alloy = constants.representative_ec_alloy;
+  impactor.redox_source = RedoxSource::kPrecomputeOutputAt0p10EarthMass;
   impactor.Validate();
   return impactor;
 }
@@ -2777,13 +3012,17 @@ template <typename Func>
   impactor.mass_kg = EarthMassToKg(constants.standard_gi_mass_earth, constants);
   impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
   impactor.is_differentiated = true;
-  impactor.silicate_inventory_source = InventorySource::kCiBulk;
-  impactor.metal_inventory_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
-  impactor.silicate_volatiles_ppm = constants.ci_bulk_volatiles_ppm;
+  impactor.bulk_inventory_source = InventorySource::kCiBulk;
+  impactor.silicate_inventory_source = InventorySource::kNone;
+  impactor.metal_inventory_source = InventorySource::kNone;
+  impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
+  impactor.bulk_volatiles_ppm = constants.ci_bulk_volatiles_ppm;
+  impactor.silicate_volatiles_ppm = {};
   impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ci_delta15n_permil;
   impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   impactor.alloy = constants.representative_ec_alloy;
+  impactor.redox_source = RedoxSource::kCurrentTargetMantle;
   impactor.Validate();
   return impactor;
 }
@@ -2803,13 +3042,17 @@ template <typename Func>
   impactor.mass_kg = EarthMassToKg(constants.late_veneer_mass_earth, constants);
   impactor.metallic_fe_fraction = constants.representative_metallic_fe_fraction;
   impactor.is_differentiated = false;
-  impactor.silicate_inventory_source = InventorySource::kEcBulk;
+  impactor.bulk_inventory_source = InventorySource::kEcBulk;
+  impactor.silicate_inventory_source = InventorySource::kNone;
   impactor.metal_inventory_source = InventorySource::kNone;
-  impactor.silicate_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.alloy_source = InventorySource::kPrecomputeCoreAt0p10EarthMass;
+  impactor.bulk_volatiles_ppm = constants.ec_bulk_volatiles_ppm;
+  impactor.silicate_volatiles_ppm = {};
   impactor.metal_volatiles_ppm = {};
   impactor.delta15n_silicate_permil = constants.ec_delta15n_permil;
   impactor.delta15n_metal_permil = std::numeric_limits<double>::quiet_NaN();
   impactor.alloy = constants.representative_ec_alloy;
+  impactor.redox_source = RedoxSource::kImpactorValue;
   impactor.Validate();
   return impactor;
 }
@@ -2876,9 +3119,96 @@ template <typename Func>
          << " class=" << ToString(impactor.impactor_class)
          << " mass_earth=" << KgToEarthMass(impactor.mass_kg, constants)
          << " differentiated=" << (impactor.is_differentiated ? "yes" : "no")
+         << " bulk_source=" << ToString(impactor.bulk_inventory_source)
          << " silicate_source=" << ToString(impactor.silicate_inventory_source)
-         << " metal_source=" << ToString(impactor.metal_inventory_source);
+         << " metal_source=" << ToString(impactor.metal_inventory_source)
+         << " alloy_source=" << ToString(impactor.alloy_source)
+         << " redox_source=" << ToString(impactor.redox_source);
   return stream.str();
+}
+
+struct CommandLineOptions {
+  bool quiet = false;
+  std::string history_csv_path;
+};
+
+void WriteHistoryCsv(const std::string& path, const SimplifiedRunResult& run) {
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("Failed to open history CSV for writing: " + path);
+  }
+
+  output << std::setprecision(15);
+  output << "step_index,label,phase,impactor_class,planet_mass_before_earth,"
+         << "planet_mass_after_earth,mantle_mass_after_earth,core_mass_after_earth,"
+         << "bse_carbon_ppm,bse_hydrogen_ppm,bse_nitrogen_ppm,"
+         << "mantle_carbon_ppm,mantle_hydrogen_ppm,mantle_nitrogen_ppm,"
+         << "core_carbon_ppm,core_hydrogen_ppm,core_nitrogen_ppm,"
+         << "atmosphere_carbon_ppm_silicate_earth,"
+         << "atmosphere_hydrogen_ppm_silicate_earth,"
+         << "atmosphere_nitrogen_ppm_silicate_earth,"
+         << "mantle_delta15n_permil,core_delta15n_permil,"
+         << "atmosphere_delta15n_permil\n";
+
+  for (const HistoryRecord& row : run.history) {
+    output << row.step_index << ','
+           << row.label << ','
+           << ToString(row.phase) << ','
+           << ToString(row.impactor_class) << ','
+           << row.planet_mass_before_earth << ','
+           << row.planet_mass_after_earth << ','
+           << row.mantle_mass_after_earth << ','
+           << row.core_mass_after_earth << ','
+           << row.bse_carbon_ppm << ','
+           << row.bse_hydrogen_ppm << ','
+           << row.bse_nitrogen_ppm << ','
+           << row.mantle_carbon_ppm << ','
+           << row.mantle_hydrogen_ppm << ','
+           << row.mantle_nitrogen_ppm << ','
+           << row.core_carbon_ppm << ','
+           << row.core_hydrogen_ppm << ','
+           << row.core_nitrogen_ppm << ','
+           << row.atmosphere_carbon_ppm_silicate_earth << ','
+           << row.atmosphere_hydrogen_ppm_silicate_earth << ','
+           << row.atmosphere_nitrogen_ppm_silicate_earth << ','
+           << row.mantle_delta15n_permil << ','
+           << row.core_delta15n_permil << ','
+           << row.atmosphere_delta15n_permil << '\n';
+  }
+}
+
+void PrintUsage(const char* argv0) {
+  std::cout << "Usage: " << argv0
+            << " [--quiet] [--history-csv PATH]\n";
+}
+
+[[nodiscard]] CommandLineOptions ParseCommandLine(int argc, char** argv) {
+  CommandLineOptions options{};
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--quiet") {
+      options.quiet = true;
+      continue;
+    }
+    if (arg == "--help" || arg == "-h") {
+      PrintUsage(argv[0]);
+      std::exit(0);
+    }
+    if (arg == "--history-csv") {
+      if (i + 1 >= argc) {
+        throw std::runtime_error("--history-csv requires a path argument.");
+      }
+      options.history_csv_path = argv[++i];
+      continue;
+    }
+    const std::string prefix = "--history-csv=";
+    if (arg.rfind(prefix, 0) == 0) {
+      options.history_csv_path = arg.substr(prefix.size());
+      continue;
+    }
+    throw std::runtime_error("Unknown command-line option: " + arg);
+  }
+  return options;
 }
 
 void PrintInitialSummary(const Constants& constants, const PlanetState& planet) {
@@ -3025,8 +3355,11 @@ void PrintSimplifiedRunSummary(const Constants& constants,
 
 }  // namespace self_oxidation
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    const self_oxidation::CommandLineOptions options =
+        self_oxidation::ParseCommandLine(argc, argv);
+
     const self_oxidation::Constants constants{};
     constants.representative_ec_alloy.Validate();
 
@@ -3037,11 +3370,20 @@ int main() {
     const self_oxidation::SimplifiedRunResult simple_run =
         self_oxidation::RunScenarioSimplified(initial_planet, scenario, constants);
 
-    self_oxidation::PrintInitialSummary(constants, initial_planet);
-    self_oxidation::PrintScenarioSummary(constants, initial_planet, scenario);
-    self_oxidation::PrintMeltPoolSummary(simple_run.first_step.resolved_impactor,
-                                         simple_run.first_step.melt_pool);
-    self_oxidation::PrintSimplifiedRunSummary(constants, simple_run);
+    if (!options.history_csv_path.empty()) {
+      self_oxidation::WriteHistoryCsv(options.history_csv_path, simple_run);
+    }
+
+    if (!options.quiet) {
+      self_oxidation::PrintInitialSummary(constants, initial_planet);
+      self_oxidation::PrintScenarioSummary(constants, initial_planet, scenario);
+      self_oxidation::PrintMeltPoolSummary(simple_run.first_step.resolved_impactor,
+                                           simple_run.first_step.melt_pool);
+      self_oxidation::PrintSimplifiedRunSummary(constants, simple_run);
+      if (!options.history_csv_path.empty()) {
+        std::cout << "history_csv=" << options.history_csv_path << std::endl;
+      }
+    }
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "error: " << exception.what() << '\n';

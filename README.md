@@ -106,7 +106,7 @@
 - 「δ¹⁵N = −5‰ の mantle」を作るには，EC（−30‰）だけでは不十分で，高 δ¹⁵N 物質を MO が液体の状態で受け取る必要がある
 - Shi et al. (2022) が明示：CI 的物質は MO 中に投入され，後続の giant impactor の金属が MO 内の N（EC + CI 混合）をコアに分配する → 残留マントルに ¹⁵N が濃縮
 - CC 的物質の GI 期混入は Grand Tack（Walsh et al. 2011）による動力学的散乱で説明可能
-- 本モデルでは GI8 impactor 自体は `~0.1 M_Earth` 級の**分化済み CC embryo**として扱う．揮発性元素の bulk inventory は CI-like 値を用いる一方，`D_N`, `D_H`, `D_C` に入る金属相 alloy 組成（`x_S`, `x_Ni`, `x_Si`）には直接制約が弱いため，EC representative alloy composition を proxy として用いる．この近似の妥当性は感度テストで評価する
+- 本モデルでは GI8 impactor 自体は `~0.1 M_Earth` 級の**分化済み CC embryo**として扱う．揮発性元素の bulk inventory は CI-like 値を用いる一方，`D_N`, `D_H`, `D_C` に入る金属相 alloy 組成には EC-like proxy を用いる．具体的には `x_S`, `x_Ni`, `x_Si` は EC representative values を保ち，`x_C` は 0.01→0.10 `M_Earth` precompute の出力コア組成から得た値を用いる．この proxy は分配係数計算にのみ用い，pre-existing な分化コアの揮発性濃度 `C_imp_met,i` や `δ¹⁵N_imp_met` を GI8 に別途与えることはしない．また self-oxidation に効く GI8 silicate redox は CC 固有値を新たに仮定せず，衝突時点の target mantle redox を用いる．
 
 #### GI9 = Theia（0.90 → 0.995）：EC-like（分化済み）
 
@@ -531,7 +531,7 @@ log(D_N^(metal/silicate)) = −0.38 + 3370/T + 75×P/T
 金属メルト組成の扱い：
 - `x_S^imp_met`, `x_Ni^imp_met`, `x_Si^imp_met` は分化済み EC impactor の representative alloy composition として固定する
 - `x_C^imp_met` は 0.01→0.10 `M_Earth` の precompute における**初期値のみ**感度パラメータとし，以後はその precompute の出力コア組成から更新する
-- GI1–GI7, GI9 では 0.10 `M_Earth` 時点の precompute 出力を採用し，GI8 では同じ differentiated-core proxy を用いる
+- GI1–GI7, GI9, GI8, late veneer では，同じ 0.10 `M_Earth` 時点の precompute 出力 alloy を proxy として用いる
 
 初期値（分化済み EC impactor representative alloy composition）：
 
@@ -544,7 +544,7 @@ log(D_N^(metal/silicate)) = −0.38 + 3370/T + 75×P/T
 
 x_C^metal の設定理由：EC 金属相の炭素は主に cohenite (Fe₃C) や graphite として独立固相で存在し，Fe-Ni 合金への溶存量の直接測定値が文献にない．そのため**0.01→0.10 precompute の開始時点**に与える `x_C^imp_met` の初期値のみ感度パラメータとして扱う．デフォルト値 0.01 は EC バルク C（~0.3–0.5 wt%）と Fe-C 二元系溶解度（Dasgupta & Hirschmann 2010）から保守的に設定した推定値である．この初期値を用いた precompute の出力コア組成から `x_C^imp_met(0.10 M_Earth)` を求め，GI1–GI7 および GI9 の `D_N`, `D_H` 評価に用いる（Section 5）．
 
-GI8（CC event）についても，`D_N`, `D_H`, `D_C` に入る金属相 alloy 組成は direct constraints が弱いため，暫定的に同じ EC representative values を proxy として用いる．ここで bulk volatile inventory の CI-like 仮定と alloy proxy は役割が異なる量であり，後者の近似誤差は感度テストで評価する．
+GI8（CC event）についても，`D_N`, `D_H`, `D_C` に入る金属相 alloy 組成は EC-like proxy を用いる．具体的には `x_S`, `x_Ni`, `x_Si` は同じ representative values を保ち，`x_C` は 0.10 `M_Earth` precompute 出力コア組成から得た値を用いる．late veneer についても，同じ precompute-derived alloy proxy を用いる．ここで bulk volatile inventory の CI-like 仮定と alloy proxy は役割が異なる量であり，後者の近似誤差は感度テストで評価する．
 
 **N 同位体分別係数（Shi 2022 Eq.2）：**
 ```
@@ -696,16 +696,32 @@ M_from_tgt = min(ρ_melt × V_melt, M_mantle_old)          （溶融した targe
 M_imp_met  = f_Fe × M_imp                                （impactor metallic Fe）
 M_imp_sil  = (1 − f_Fe) × M_imp                          （impactor silicate）
 M_melt_sil = M_from_tgt + M_imp_sil                      （equilibrating silicate melt mass）
+```
 
-w_melt,i⁰  = [w_mantle,i × M_from_tgt + w_imp,i × M_imp_sil] / M_melt_sil
-C_melt,i⁰  = 10^6 × w_melt,i⁰                            （混合濃度 [ppm]）
+impactor の揮発性 inventory には 2 つのモードを区別する。
+
+1. **phase-resolved impactor**（GI1–GI7, GI9）
+```
+w_melt,i⁰ = [w_mantle,i × M_from_tgt + w_imp,sil,i × M_imp_sil] / M_melt_sil
+C_melt,i⁰ = 10^6 × w_melt,i⁰
+
+N_melt     = w_melt,N⁰ × M_melt_sil
+δ¹⁵N_melt = [w_mantle,N × M_from_tgt × δ¹⁵N_mantle
+              + w_imp,sil,N × M_imp_sil × δ¹⁵N_imp] / N_melt
+```
+
+2. **bulk-inventory impactor**（暴走・寡占成長の未分化 EC，GI8，late veneer）
+```
+M_imp,vol,i = w_imp,bulk,i × M_imp
+w_melt,i⁰   = [w_mantle,i × M_from_tgt + M_imp,vol,i] / M_melt_sil
+C_melt,i⁰   = 10^6 × w_melt,i⁰
 
 N_melt      = w_melt,N⁰ × M_melt_sil
 δ¹⁵N_melt  = [w_mantle,N × M_from_tgt × δ¹⁵N_mantle
-               + w_imp,N × M_imp_sil × δ¹⁵N_imp] / N_melt                   （混合 δ¹⁵N）
+               + M_imp,vol,N × δ¹⁵N_imp] / N_melt
 ```
 
-ここで `w_mantle,i = C_mantle,i × 10^-6`, `w_imp,i = C_imp,i × 10^-6` である．
+ここで `w_mantle,i = C_mantle,i × 10^-6`, `w_imp,sil,i = C_imp,sil,i × 10^-6`, `w_imp,bulk,i = C_imp,bulk,i × 10^-6` である．bulk-inventory impactor では，揮発性元素総量を `bulk inventory × M_imp` として保持したうえで，その全量を equilibrating silicate reservoir に投入する bookkeeping を採用する．これは未分化体の金属 Fe 質量が 0 であることを意味しない．金属 Fe 自体は `M_imp_met = f_Fe × M_imp` として別途存在し，melt pool 内で分離・沈降する。
 
 - `V_melt` は target 側に新たに生成した silicate melt volume と解釈し，impactor silicate はこの melt pool に全量混合すると近似する
 - したがって Step 1 で平衡に参加する silicate は `M_from_tgt + M_imp_sil`，metal は `M_imp_met` である
@@ -730,11 +746,10 @@ M_atm,i^old + w_melt,i⁰ × M_melt_sil + w_imp_met,i × M_imp_met
 |---|---|---|
 | 暴走・寡占成長（0.01→0.10） | 0（未分化体，pre-existing core なし） | 未使用 |
 | GI1–GI7, GI9 = Theia | 0.01→0.10 計算の出力コア濃度 C_core,i | 0.01→0.10 計算の出力コア δ¹⁵N |
-| GI8（CI-like CC embryo） | 揮発性元素の bulk inventory は CI-like とする一方，metal reservoir の揮発性濃度 `C_imp_met,i` は direct constraints が弱いため GI1–GI7 と同じ differentiated-core proxy を用いる | 同じ differentiated-core proxy |
+| GI8（CI-like CC embryo） | 0（bulk inventory は CI-like として silicate reservoir に一括投入し，pre-existing metal volatile reservoir は与えない） | 未使用 |
 | late veneer | 0（未分化体として扱う） | 未使用 |
 
-ここで `C_imp_met,i = 0` は「pre-existing な分化コアの揮発性濃度を持たない」ことを意味する．`M_imp_met = f_Fe × M_imp` 自体は，未分化 EC impactor に含まれる金属 Fe が melt pool 内で分離・沈降して形成する原始コア成分として別途存在しうる．
-また `w_imp_met,i = C_imp_met,i × 10^-6` とする．
+ここで `C_imp_met,i = 0` は「pre-existing な分化コアの揮発性濃度を持たない」ことを意味する．`M_imp_met = f_Fe × M_imp` 自体は，未分化 EC impactor や GI8 impactor に含まれる金属 Fe が melt pool 内で分離・沈降して形成する原始コア成分として別途存在しうる．`GI8` では，分配係数 `D_N`, `D_H`, `D_C` に入る alloy 組成 `x_S`, `x_Ni`, `x_Si`, `x_C` のみ EC proxy を用い，`w_imp_met,i = C_imp_met,i × 10^-6 = 0` とする．
 
 **大気-ケイ酸塩平衡（Sakuraba 2021 Eq.9，Henry 則）：**
 ```
